@@ -19,7 +19,7 @@
 Name: cluster
 Summary: Red Hat Cluster
 Version: 3.0.12.1
-Release: 73%{?alphatag:.%{alphatag}}%{?dist}.1
+Release: 73%{?alphatag:.%{alphatag}}%{?dist}.2
 License: GPLv2+ and LGPLv2+
 Group: System Environment/Base
 URL: http://sources.redhat.com/cluster/wiki/
@@ -314,6 +314,7 @@ Patch286: bz1142947-cman_fix_message_for_non-2node_clusters.patch
 Patch287: bz1121693-libgfs2_Make_sure_secontext_gets_freed.patch
 Patch288: bz1233535-dlm_controld_retry_uevent_on_error.patch
 Patch289: bz1234443-gfs_controld_retry_uevent_on_error.patch
+Patch290: bz1297165-proper_vote_check.patch
 
 ## Setup/build bits
 
@@ -622,6 +623,7 @@ ExclusiveArch: i686 x86_64
 %patch287 -p1 -b .bz1121693-libgfs2_Make_sure_secontext_gets_freed
 %patch288 -p1 -b .bz1233535-dlm_controld_retry_uevent_on_error.patch
 %patch289 -p1 -b .bz1234443-gfs_controld_retry_uevent_on_error.patch
+%patch290 -p1 -b .bz1297165-proper_vote_check.patch
 
 %build
 ./configure \
@@ -837,6 +839,10 @@ fi
 %{_mandir}/man8/*gfs2*
 
 %changelog
+* Thu Jan 14 2016 Ken Gaillot <kgaillot@redhat.com> - 3.0.12.1-73.2
+- cman: Properly check for votes when node names aren't specified
+  Resolves: rhbz#1298455
+
 * Mon Jul 06 2015 Christine Caulfield <ccaulfie@redhat.com> - 3.0.12.1-73.1
 - gfs_controld: Retry uevent recv() and reconnect uevent socket on error
   Resolves: rhbz#1234443
