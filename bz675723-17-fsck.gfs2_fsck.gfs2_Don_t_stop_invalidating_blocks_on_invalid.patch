@@ -1,0 +1,42 @@
+commit 01401b5167a5d2aa9b36a1dc4605ec07fca4db65
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Mon Aug 8 16:20:14 2011 -0500
+
+    fsck.gfs2: fsck.gfs2: Don't stop invalidating blocks on invalid
+    
+    When fsck found a duplicate reference to a block it invalidated the dinode's
+    metadata.  But if it encountered an invalid block, for example, out of range,
+    the invalidating would stop.  If we encounter a block that isn't valid, we
+    obviously can't invalidate it.  However, if we return an error, all future
+    invalidating will stop for that dinode.  That's wrong because we need it to
+    continue to invalidate the other valid blocks.  If we don't do this, block
+    references that follow the bad one that are also referenced elsewhere
+    (duplicates) won't be flagged as such.  As a result, they'll be freed when
+    this corrupt dinode is deleted, despite being used by another dinode as a
+    valid block.  This patch makes it return a good return code so the invalidating
+    continues.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index 49a8f4e..271075c 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -825,8 +825,15 @@ static int mark_block_invalid(struct gfs2_inode *ip, uint64_t block,
+ {
+ 	uint8_t q;
+ 
+-	if (!valid_block(ip->i_sbd, block) != 0)
+-		return -EFAULT;
++	/* If the block isn't valid, we obviously can't invalidate it.
++	 * However, if we return an error, invalidating will stop, and
++	 * we want it to continue to invalidate the valid blocks.  If we
++	 * don't do this, block references that follow that are also
++	 * referenced elsewhere (duplicates) won't be flagged as such,
++	 * and as a result, they'll be freed when this dinode is deleted,
++	 * despite being used by another dinode as a valid block. */
++	if (!valid_block(ip->i_sbd, block))
++		return 0;
+ 
+ 	q = block_type(block);
+ 	if (q != gfs2_block_free) {

@@ -1,0 +1,61 @@
+From 70b15e7afa730166ef0a3c81948d31ab1dd5aa93 Mon Sep 17 00:00:00 2001
+From: David Teigland <teigland@redhat.com>
+Date: Mon, 31 Oct 2011 13:04:43 -0500
+Subject: [PATCH] dlm_controld: fix handling of startup partition merge
+
+Nack messages are not matched correctly with previous change
+structs.  Normal start messages should not be matched with
+changes that preceeded the node's join time, but nack messages
+should, so the match_change() function needs to distinguish.
+
+This can occur when two nodes are joining a lockspace, but
+neither has completed when a cluster partition+merge happens.
+
+bz 750314
+
+Signed-off-by: David Teigland <teigland@redhat.com>
+---
+ group/dlm_controld/action.c |    6 +++++-
+ group/dlm_controld/cpg.c    |    9 ++++++++-
+ 2 files changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/group/dlm_controld/action.c b/group/dlm_controld/action.c
+index 0570a2f..56401a3 100644
+--- a/group/dlm_controld/action.c
++++ b/group/dlm_controld/action.c
+@@ -424,7 +424,11 @@ int set_configfs_members(char *name, int new_count, int *new_members,
+ 			if (rv) {
+ 				log_error("%s: renew rmdir failed: %d",
+ 					  path, errno);
+-				goto out;
++
++				/* don't quit here, there's a case where
++				 * this can happen, where a node identified
++				 * for renewal was not really added
++				 * previously */
+ 			}
+ 		}
+ 
+diff --git a/group/dlm_controld/cpg.c b/group/dlm_controld/cpg.c
+index 9b0d223..4463f4d 100644
+--- a/group/dlm_controld/cpg.c
++++ b/group/dlm_controld/cpg.c
+@@ -952,7 +952,14 @@ static int match_change(struct lockspace *ls, struct change *cg,
+ 			  "cluster add %llu", hd->nodeid, seq, cg->seq,
+ 			  (unsigned long long)cg->create_time,
+ 			  (unsigned long long)node->cluster_add_time);
+-		return 0;
++
++		/* nacks can apply to older cg's */
++		if (!(hd->flags & DLM_MFLG_NACK)) {
++			return 0;
++		} else {
++			log_group(ls, "match_change %d:%u unskip cg %u for nack",
++				  hd->nodeid, seq, cg->seq);
++		}
+ 	}
+ 
+ 	/* verify this is the right change by matching the counts
+-- 
+1.7.7.6
+

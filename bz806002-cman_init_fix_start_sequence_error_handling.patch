@@ -1,0 +1,51 @@
+commit ff280bc349cb7ce973aaab1f1a3dd1b289dff711
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Fri Mar 30 09:58:36 2012 +0200
+
+    cman init: fix start sequence error handling
+    
+    Any daemon that fails to start would leave no traces.
+    
+    the problem with cman init is that we need to handle multiple daemons
+    and tools. If one in the chain fails, we never reverted to the original
+    state of the system. This can indeed cause other issues.
+    
+    Fix the init script to "stop" cman if any error happens during "start.
+    
+    Resolves: rhbz#806002
+    
+    Reviewed-by: Christine Caulfield <ccaulfie@redhat.com>
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/cman/init.d/cman.in b/cman/init.d/cman.in
+index 48fab3c..1268b59 100644
+--- a/cman/init.d/cman.in
++++ b/cman/init.d/cman.in
+@@ -19,6 +19,9 @@
+ # set secure PATH
+ PATH="/bin:/usr/bin:/sbin:/usr/sbin:@SBINDIR@"
+ 
++# save invokation for rollback ops
++thisinvokation="$0"
++
+ local_chkconfig()
+ {
+ 	case "$1" in
+@@ -183,6 +186,9 @@ nok() {
+ 	echo -e "$errmsg"
+ 	failure
+ 	echo
++	if [ "$currentaction" = "start" ]; then
++		$thisinvokation stop
++	fi
+ 	exit 1
+ }
+ 
+@@ -695,6 +701,7 @@ leave_fence_domain()
+ 
+ start()
+ {
++	currentaction="start"
+ 	breakpoint="$1"
+ 
+ 	sshd_enabled && service sshd start

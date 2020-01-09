@@ -1,0 +1,11 @@
+--- a/config/tools/ccs_tool/ccs_tool.c	
++++ a/config/tools/ccs_tool/ccs_tool.c	
+@@ -210,7 +210,7 @@ static int tool_main(int argc, char *argv[])
+       optind++;
+       globalverbose=1;
+     }
+-    if(!strcmp(argv[optind], "help")){
++    if(!argv[optind] || !strcmp(argv[optind], "help")){
+       tool_print_usage(stdout);
+       exit(EXIT_SUCCESS);
+     }

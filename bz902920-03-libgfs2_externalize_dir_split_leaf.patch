@@ -1,0 +1,38 @@
+commit 6f85923316e5b1504a231cd7c8bde5bb6a059506
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Thu Feb 21 09:29:24 2013 -0700
+
+    libgfs2: externalize dir_split_leaf
+    
+    This patch makes libgfs2 externalize function dir_split_leaf so that
+    fsck.gfs2 can split leafs in a future patch.
+    
+    rhbz#902920
+
+diff --git a/gfs2/libgfs2/fs_ops.c b/gfs2/libgfs2/fs_ops.c
+index 1164a8c..5417efb 100644
+--- a/gfs2/libgfs2/fs_ops.c
++++ b/gfs2/libgfs2/fs_ops.c
+@@ -865,8 +865,7 @@ void gfs2_put_leaf_nr(struct gfs2_inode *dip, uint32_t inx, uint64_t leaf_out)
+ 		die("gfs2_put_leaf_nr:  Bad internal write.\n");
+ }
+ 
+-static void dir_split_leaf(struct gfs2_inode *dip, uint32_t lindex,
+-			   uint64_t leaf_no)
++void dir_split_leaf(struct gfs2_inode *dip, uint32_t lindex, uint64_t leaf_no)
+ {
+ 	struct gfs2_buffer_head *nbh, *obh;
+ 	struct gfs2_leaf *nleaf, *oleaf;
+diff --git a/gfs2/libgfs2/libgfs2.h b/gfs2/libgfs2/libgfs2.h
+index bf834a5..9e3de8a 100644
+--- a/gfs2/libgfs2/libgfs2.h
++++ b/gfs2/libgfs2/libgfs2.h
+@@ -400,6 +400,8 @@ extern void block_map(struct gfs2_inode *ip, uint64_t lblock, int *new,
+ extern void gfs2_get_leaf_nr(struct gfs2_inode *dip, uint32_t index,
+ 			     uint64_t *leaf_out);
+ extern void gfs2_put_leaf_nr(struct gfs2_inode *dip, uint32_t inx, uint64_t leaf_out);
++extern void dir_split_leaf(struct gfs2_inode *dip, uint32_t lindex,
++			   uint64_t leaf_no);
+ extern void gfs2_free_block(struct gfs2_sbd *sdp, uint64_t block);
+ extern int gfs2_freedi(struct gfs2_sbd *sdp, uint64_t block);
+ extern int gfs2_get_leaf(struct gfs2_inode *dip, uint64_t leaf_no,

@@ -1,0 +1,30 @@
+--- a/fence/fenced/cpg.c	
++++ a/fence/fenced/cpg.c	
+@@ -1089,6 +1089,7 @@ static void receive_start(struct fd *fd, struct fd_header *hd, int len)
+ 	if (added && fi->started_count && fd->started_count) {
+ 		log_error("receive_start %d:%u add node with started_count %u",
+ 			  hd->nodeid, seq, fi->started_count);
++		log_error("fence domain %s - membership is disallowed", fd->name);
+ 
+ 		/* This is how we deal with cpg's that are partitioned and
+ 		   then merge back together.  When the merge happens, the
+--- a/group/dlm_controld/cpg.c	
++++ a/group/dlm_controld/cpg.c	
+@@ -1091,6 +1091,7 @@ static void receive_start(struct lockspace *ls, struct dlm_header *hd, int len)
+ 	if (added && li->started_count && ls->started_count) {
+ 		log_error("receive_start %d:%u add node with started_count %u",
+ 			  hd->nodeid, seq, li->started_count);
++		log_error("DLM lockspace %s - membership is disallowed", ls->name);
+ 
+ 		/* see comment in fence/fenced/cpg.c */
+ 		memb->disallowed = 1;
+--- a/group/gfs_controld/cpg-new.c	
++++ a/group/gfs_controld/cpg-new.c	
+@@ -1152,6 +1152,7 @@ static void receive_start(struct mountgroup *mg, struct gfs_header *hd, int len)
+ 	if (added && mi->started_count && mg->started_count) {
+ 		log_error("receive_start %d:%u add node with started_count %u",
+ 			  hd->nodeid, seq, mi->started_count);
++		log_error("GFS2 mountpoint %s - membership is disallowed", mg->name);
+ 
+ 		/* see comment in fence/fenced/cpg.c */
+ 		memb->disallowed = 1;

@@ -1,0 +1,33 @@
+From 129b016470e49e7fdd40a6116285c976c88307b3 Mon Sep 17 00:00:00 2001
+From: Bob Peterson <rpeterso@redhat.com>
+Date: Mon, 17 Dec 2012 14:43:04 -0600
+Subject: [PATCH 1/8] gfs2_convert: mark rgrp bitmaps dirty when converting
+
+This patch changes gfs2_convert function convert_bitmaps so that
+it marks the affected rgrp buffers as modified when bitmap bits
+are switched from unlinked metadata to free blocks.
+
+rhbz#888053
+---
+ gfs2/convert/gfs2_convert.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/gfs2/convert/gfs2_convert.c b/gfs2/convert/gfs2_convert.c
+index fa6461f..2a72504 100644
+--- a/gfs2/convert/gfs2_convert.c
++++ b/gfs2/convert/gfs2_convert.c
+@@ -184,8 +184,10 @@ static void convert_bitmaps(struct gfs2_sbd *sdp, struct rgrp_tree *rg)
+ 			for (y = 0; y < GFS2_NBBY; y++) {
+ 				state = (rg->bh[blk]->b_data[x] >>
+ 					 (GFS2_BIT_SIZE * y)) & 0x03;
+-				if (state == 0x02) /* unallocated metadata state invalid */
++				if (state == 0x02) {/* unallocated metadata state invalid */
+ 					rg->bh[blk]->b_data[x] &= ~(0x02 << (GFS2_BIT_SIZE * y));
++					bmodified(rg->bh[blk]);
++				}
+ 			}
+ 	}
+ }/* convert_bitmaps */
+-- 
+1.7.11.7
+

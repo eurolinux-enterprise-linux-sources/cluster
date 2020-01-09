@@ -1,0 +1,80 @@
+commit e3f8a987f0108b0f5c1c76e8750c35f23fca2191
+Author: David Teigland <teigland@redhat.com>
+Date:   Tue Jul 9 13:35:36 2013 -0500
+
+    fenced: wait for ringid
+    
+    Ensure we don't process a nodedown confchg before getting
+    the corresponding ringid cb.
+    
+    This miscompare happens when the cpg confchg callback is
+    delivered before either the cluster change or cpg ringid
+    callback.  (Usually the cluster change arrives first, so
+    this is not a common problem.)
+    
+    Copied same fix from dlm.git commit 02850b6
+    
+    Signed-off-by: David Teigland <teigland@redhat.com>
+
+diff --git a/fence/fenced/cpg.c b/fence/fenced/cpg.c
+index a5a4208..0fde6a6 100644
+--- a/fence/fenced/cpg.c
++++ b/fence/fenced/cpg.c
+@@ -709,6 +709,27 @@ static int check_quorum_done(struct fd *fd)
+ 
+ static int check_ringid_done(struct fd *fd)
+ {
++	/* If we've received a confchg due to a nodedown, but not
++	   the corresponding ringid callback, then we should wait
++	   for the ringid callback.  Once we have both conf and ring
++	   callbacks, we can compare cpg/quorum ringids.
++
++	   Otherwise, there's a possible problem if we receive a
++	   confchg before both ringid callback and quorum callback.
++	   Then we'd get through this function by comparing the old,
++	   matching ringids.
++
++	   (We seem to usually get the quorum callback before any cpg
++	   callbacks, in which case we wouldn't need cpg_ringid_wait,
++	   but that's probably not guaranteed.) */
++
++	if (fd->cpg_ringid_wait) {
++		log_debug("check_ringid wait cluster %u cpg %u:%llu",
++			  cluster_ringid_seq, fd->cpg_ringid.nodeid,
++			  (unsigned long long)fd->cpg_ringid.seq);
++		return 0;
++	}
++
+ 	if (cluster_ringid_seq != (uint32_t)fd->cpg_ringid.seq) {
+ 		log_debug("check_ringid cluster %u cpg %u:%llu",
+ 			  cluster_ringid_seq, fd->cpg_ringid.nodeid,
+@@ -1472,6 +1493,9 @@ static int add_change(struct fd *fd,
+ 		}
+ 		list_add_tail(&memb->list, &cg->removed);
+ 
++		if (left_list[i].reason == CPG_REASON_NODEDOWN)
++			fd->cpg_ringid_wait = 1;
++
+ 		if (memb->failed)
+ 			node_history_fail(fd, memb->nodeid, cg->seq);
+ 		else
+@@ -1703,6 +1727,7 @@ static void totem_cb_domain(cpg_handle_t handle,
+ 
+ 	fd->cpg_ringid.nodeid = ring_id.nodeid;
+ 	fd->cpg_ringid.seq = ring_id.seq;
++	fd->cpg_ringid_wait = 0;
+ 
+ 	apply_changes(fd);
+ }
+diff --git a/fence/fenced/fd.h b/fence/fenced/fd.h
+index 34a6c7f..d678bfa 100644
+--- a/fence/fenced/fd.h
++++ b/fence/fenced/fd.h
+@@ -182,6 +182,7 @@ struct fd {
+ 	int			init_complete;
+ 	int			local_init_complete;
+ 	struct cpg_ring_id	cpg_ringid;
++	int			cpg_ringid_wait;
+ 
+ 	/* general domain membership */
+ 

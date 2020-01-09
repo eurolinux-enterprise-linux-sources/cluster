@@ -1,0 +1,27 @@
+commit 016ee0de51798782fc4036836ad740e0c42e586e
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Thu Nov 8 13:36:44 2012 +0100
+
+    libccs: don't use uninitialized value in xpathlite
+    
+    Resolves: rhbz#874538
+    
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/config/libs/libccsconfdb/xpathlite.c b/config/libs/libccsconfdb/xpathlite.c
+index e57b5c7..6ffbf63 100644
+--- a/config/libs/libccsconfdb/xpathlite.c
++++ b/config/libs/libccsconfdb/xpathlite.c
+@@ -300,10 +300,10 @@ static int get_data(confdb_handle_t handle, hdb_handle_t connection_handle,
+ 			value--;
+ 		}
+ 
+-		resval = malloc(datalen + keyvallen + 2);
++		resval = malloc(datalen + 2);
+ 		if (!resval)
+ 			goto fail;
+-		snprintf(resval, datalen + keyvallen + 2, "%s=%s", data, keyval);
++		snprintf(resval, datalen + 2, "%s=", data);
+ 		*rtn = resval;
+ 
+ 	} else if (!strncmp(curpos, "@*", strlen("@*"))) {

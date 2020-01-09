@@ -1,0 +1,379 @@
+commit d704be54886c33aa57944a878d3d66339fb6f3dd
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Thu Sep 6 19:47:27 2012 +0200
+
+    fence_check: add script and man page
+    
+    Resolves: rhbz#797952
+    
+    This commits depends on 3c9226bbc66fde9e9703a4685ed46e6e17d9085a and
+    0cfe92b84b8a4ce62e896919a93210d6b7694f6b
+    
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/fence/Makefile b/fence/Makefile
+index b3f9a61..a8783bb 100644
+--- a/fence/Makefile
++++ b/fence/Makefile
+@@ -1,4 +1,4 @@
+ include ../make/defines.mk
+ include $(OBJDIR)/make/passthrough.mk
+ 
+-SUBDIRS=libfence libfenced fenced fence_node fence_tool man
++SUBDIRS=libfence libfenced fenced fence_node fence_tool fence_check man
+diff --git a/fence/fence_check/Makefile b/fence/fence_check/Makefile
+new file mode 100644
+index 0000000..3788f26
+--- /dev/null
++++ b/fence/fence_check/Makefile
+@@ -0,0 +1,20 @@
++include ../../make/defines.mk
++
++TARGET1 = fence_check
++
++SBINDIRT = $(TARGET1)
++
++all: $(TARGET1)
++
++include $(OBJDIR)/make/clean.mk
++include $(OBJDIR)/make/install.mk
++include $(OBJDIR)/make/uninstall.mk
++
++${TARGET1}: $(S)/${TARGET1}.in
++	cat $(S)/$(TARGET1).in | sed \
++		-e 's#@SBINDIR@#${sbindir}#g' \
++		-e 's#@LOGDIR@#${logdir}#g' \
++		-e 's#@VERSION@#${RELEASE_VERSION}#g' \
++	> $(TARGET1)
++
++clean: generalclean
+diff --git a/fence/fence_check/fence_check.in b/fence/fence_check/fence_check.in
+new file mode 100644
+index 0000000..e194daf
+--- /dev/null
++++ b/fence/fence_check/fence_check.in
+@@ -0,0 +1,241 @@
++#!/bin/bash
++
++set +e
++export LC_ALL=C
++export PATH="/bin:/usr/bin:/sbin:/usr/sbin:@SBINDIR@"
++
++logfile=@LOGDIR@/fence_check.log
++verbose=""
++vardir=/var/run
++
++print_usage() {
++	echo "Usage:"
++	echo ""
++	echo "fence_check [options]"
++	echo ""
++	echo "Options:"
++	echo "  -h               Print this help, then exit"
++	echo "  -V               Print program version information, then exit"
++	echo "  -d               Disable output to logfile ($logfile)"
++	echo "  -v               Produce verbose output"
++	echo "  -e               Produce extra verbose output"
++	echo "                   ATTENTION: IT MIGHT SHOW FENCE PASSWORDS IN LOG FILES!!!"
++	echo "  -f               Override checks and force execution"
++	echo "                   DO NOT USE ON PRODUCTION CLUSTERS!!!"
++}
++
++check_opts() {
++	while [ "$1" != "--" ]; do
++		case $1 in
++		-h)
++			print_usage
++			exit 0
++		;;
++		-V)
++			echo "fence_check version @VERSION@"
++			exit 0
++		;;
++		-v)
++			verbose=1
++		;;
++		-e)
++			fencenodeopts="-vv"
++		;;
++		-d)
++			logfile=""
++		;;
++		-f)
++			override="1"
++		;;
++		esac
++		shift
++	done
++}
++
++opts=$(getopt hdefvV $@)
++if [ "$?" != 0 ]; then
++	print_usage >&2
++	exit 1
++fi
++check_opts $opts
++
++cleanup() {
++	vecho "cleanup: $@"
++	rm -f $vardir/fence_check.pid
++	exit $1
++}
++
++trap "cleanup 1 ABRT" ABRT
++trap "cleanup 1 QUIT" QUIT
++trap "cleanup 1 TERM" TERM
++trap "cleanup 1 INT" INT
++
++lecho() {
++	[ -n "$logfile" ] && echo "$@" | tee -a $logfile
++	[ -z "$logfile" ] && echo "$@"
++	return 0
++}
++
++vecho() {
++	[ -z "$verbose" ] && return 0
++	lecho "$@"
++}
++
++error_report()
++{
++	lecho "Unable to perform fence_check: $@"
++}
++
++cman_running()
++{
++	vecho -n "Checking if cman is running: "
++	thisnodeid="$(cman_tool status 2>&1 | grep "Node ID:" | awk '{print $NF}')"
++	[ -z "$thisnodeid" ] && {
++		vecho "not running"
++		return 1
++	}
++	vecho "running"
++}
++
++cman_has_quorum()
++{
++	vecho -n "Checking if node is quorate: "
++	cman_tool -t 1 -q wait > /dev/null 2>&1 || {
++		vecho "not quorate"
++		return 1
++	}
++	vecho "quorate"
++}
++
++fence_domain()
++{
++	vecho -n "Checking if node is in fence domain: "
++	fencels="$(fence_tool ls 2>&1)" || { 
++		vecho "not part of fence domain"
++		return 1
++	}
++	vecho "yes"
++}
++
++fence_in_progress()
++{
++	vecho -n "Checking if real fencing is in progress: "
++	victim="$(echo "$fencels" | grep "victim count" | awk '{print $NF}')"
++	[ "$victim" != "0" ] && {
++		vecho "real fencing in progress"
++		return 1
++	}
++	vecho "no fencing in progress"
++}
++
++fence_master()
++{
++	vecho -n "Checking if node is fence master: "
++	master="$(echo "$fencels" | grep "master nodeid" | awk '{print $NF}')"
++	[ "$master" != "$thisnodeid" ] && {
++		vecho "node is not fence master"
++		return 1
++	}
++	vecho "this node is fence master"
++}
++
++can_check()
++{
++	cman_running || {
++		error_report "cman is not running"
++		return 2
++	}
++
++	[ "$override" = "1" ] && return 0
++
++	cman_has_quorum || {
++		error_report "node is not quorate"
++		return 3
++	}
++
++	fence_domain || {
++		error_report "node is not part of the fence domain"
++		return 3
++	}
++
++	fence_master || {
++		error_report "node is not fence master"
++		return 3
++	}
++
++	fence_in_progress || {
++		error_report "real fencing operation in progress"
++		return 3
++	}
++
++	return 0
++}
++
++execute_check()
++{
++	can_check || return $?
++
++	vecho -n "Get node list: "
++	nodelist="$(cman_tool nodes -F id,name |grep -v '^0' | awk '{print $2}')"
++	vecho $nodelist
++
++	ret=0
++
++	for node in $nodelist; do
++		vecho "Testing $node fencing"
++
++		can_check
++		canret=$?
++
++		if [ "$canret" != 0 ]; then
++			if [ "$ret" != "5" ]; then
++				return $canret
++			else
++				return $ret
++			fi
++		fi
++
++		vecho "Checking how many fencing methods are configured for node $node"
++		for i in $(seq 1 8); do
++			 ccs_tool query \
++				/cluster/clusternodes/clusternode[@name=\"$node\"]/fence/method[$i]/@name >/dev/null 2>&1 || break
++		done
++		nummethods=$((i - 1))
++		vecho "Found $nummethods method(s) to test for node $node"
++
++		for method in $(seq 1 $nummethods); do
++			vecho "Testing $node method $method status"
++			fenceres="$(fence_node $fencenodeopts -S $node -m $method 2>&1)"
++			if [ "$?" != 0 ]; then
++				ret=5
++				lecho "Testing $node method $method: FAILED"
++				if [ -z "$fencenodeopts" ]; then
++					fenceres="$(echo "$fenceres" | tail -n 2 | head -n 1)"
++				else
++					fenceargs="$(echo "$fenceres" | tail -n 2 | head -n 1)"
++					fenceres="$(echo "$fenceres" | tail -n 3 | head -n 1)"
++				fi
++				lecho "$fenceres"
++				[ -n "$fenceargs" ] && lecho "$fenceargs"
++			else
++				lecho "Testing $node method $method: success"
++			fi
++		done
++	done
++	return $ret
++}
++
++(
++	lecho "fence_check run at $(date) pid: $BASHPID"
++
++	flock --nonblock --exclusive 200 || {
++		lecho "Another process ($(cat $vardir/fence_check.pid)) is holding the lock"
++		exit 4
++	}
++
++	echo $BASHPID > $vardir/fence_check.pid
++
++	execute_check
++	cleanup $?
++
++) 200>>$vardir/fence_check.pid
+diff --git a/fence/man/Makefile b/fence/man/Makefile
+index a4a9cf1..3c9aa44 100644
+--- a/fence/man/Makefile
++++ b/fence/man/Makefile
+@@ -1,6 +1,6 @@
+ include ../../make/defines.mk
+ 
+-MANTARGET = fenced.8 fence_node.8 fence_tool.8
++MANTARGET = fenced.8 fence_node.8 fence_tool.8 fence_check.8
+ 
+ include $(OBJDIR)/make/install.mk
+ include $(OBJDIR)/make/uninstall.mk
+diff --git a/fence/man/fence_check.8 b/fence/man/fence_check.8
+new file mode 100644
+index 0000000..7fc221c
+--- /dev/null
++++ b/fence/man/fence_check.8
+@@ -0,0 +1,65 @@
++.TH "fence_check" "8" "September 2012" "" "fence configuration check"
++.SH "NAME"
++fence_check \- fence configuration check utility
++.SH "SYNOPSIS"
++\fBfence_check [\-h] [\-V] [\-d] [\-v] [\-e]
++.SH "DESCRIPTION"
++.PP 
++The \fBfence_check\fP utility can be used to actively test the fence
++configuration for each node in the cluster, by issuing status commands
++instead of "reboot" "on" "off" commands on the configured fence
++methods/devices in cluster.conf.
++
++\fBfence_check\fP can also be very useful when executed via a cron job
++for regular monitoring of fence devices and to detect issues after
++cluster.conf changes.
++
++.SH "OPTIONS"
++.IP "\-h"
++Print help message, then exit.
++.IP "\-V"
++Print program version information, then exit.
++.IP "\-d"
++Disable output to logfile (default /var/log/cluster/fence_check.log).
++Useful in combination with \-e that could record sensitive data from
++cluster.conf.
++.IP "\-v"
++Enable verbose output of all actions taken during execution.
++Useful to debug issues with fence_check execution.
++Use of \-v does not include \-e.
++.IP "\-e"
++Produce detailed output, in case of failure, of the command used to test
++the fence device. Use of \-e does not include \-v.
++ATTENTION: IT MIGHT SHOW FENCE PASSWORDS IN LOG FILES! USE WITH CARE!
++.IP "\-f"
++Override checks and force execution. DO NOT USE ON PRODUCTION CLUSTERS!
++
++.SH "NOTES"
++\fBfence_check\fP can only be executed when the following conditions are met:
++
++\- cman is running on the node
++
++\- the node is quorate
++
++\- the node has joined the fence domain
++
++\- the node is in charge of fencing for the whole cluster
++
++\- no real fencing action is in progress
++
++\- no other \fBfence_check\fP operations are in progress.
++
++\fBfence_check\fP will perform all those checks prior starting a cluster wide
++fence status check. When used in combination with \-f, cman must be running
++on the node and no other processes must be performing a check at the same time.
++
++By default every run of \fBfence_check\fP is logged to logfile and to stdout.
++
++fence_check returns:
++
++0 - if execution completes
++1 - on generic execution errors (fatal)
++2 - if cman is not running (fatal)
++3 - node is not quorate/node is not part of fence domain/if node is not in charge of fencing/a real fencing operation is in progress (can be overridden)
++4 - if another \fBfence_check\fP is in progress (fatal)
++5 - if any of the fence status tests failed

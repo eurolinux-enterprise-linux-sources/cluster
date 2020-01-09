@@ -1,0 +1,48 @@
+commit 56c536851aed2ccb182d0a56981829a3eab57142
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Mon Jan 28 09:11:17 2013 -0700
+
+    fsck.gfs2: Special case '..' when processing bad formal inode number
+    
+    In a recent patch to fsck.gfs2, we added the ability to make sure the
+    formal inode number in each directory entry matches the formal inode
+    number in the dinode. If it doesn't match, fsck tries to fix it up.
+    We can't do much for regular files, but we can fix up directories.
+    If the directory linkage is intact, it just fixes the formal inode number.
+    But to check if the directory linkage is intact, we were checking to make
+    sure the child directory points to the parent with its "..". For example,
+    suppose we have gfs2 mounted as /mnt/gfs2, and at the root, we have
+    directory "a", and within "a" we have a subdirectory "b". In other words:
+    /mnt/gfs2/a/b/...
+    
+    Now suppose fsck.gfs2 finds a formal inode number mismatch between the
+    dirent inside "a" which points to "b" and the inode "b" itself. Since
+    both "a" and "b" are directories, it tries to determine if the directory
+    linkage is intact by testing whether b's ".." dirent actually points
+    back to "a". And if it's good, we can just fix the formal inode number
+    so that they match.
+    
+    That's all well and good, and works for the most part. However, if
+    the dirent found to be wrong isn't "b" but ".." we've got a problem.
+    Today's algorithm would look up the ".." of ".." which won't be
+    pointingi back to what we want.
+    
+    For this patch, I'm special-casing ".." and making it just delete the
+    correct directory entry. However, we have to do it in such a way that
+    it doesn't decrement di_entries, since the entry is invalid.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/pass2.c b/gfs2/fsck/pass2.c
+index 359bca0..c0efacc 100644
+--- a/gfs2/fsck/pass2.c
++++ b/gfs2/fsck/pass2.c
+@@ -258,7 +258,7 @@ static int bad_formal_ino(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 		 (unsigned long long)entry.no_formal_ino,
+ 		 (unsigned long long)ii->di_num.no_formal_ino,
+ 		 (unsigned long long)ii->di_num.no_formal_ino);
+-	if (q != gfs2_inode_dir) {
++	if (q != gfs2_inode_dir || !strcmp("..", tmp_name)) {
+ 		if (query( _("Remove the corrupt directory entry? (y/n) ")))
+ 			return 1;
+ 		log_err( _("Corrupt directory entry not removed.\n"));

@@ -1,0 +1,49 @@
+commit 88e4349b9b636d12b3c51f9c0f734b0259b36954
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Tue Jul 24 11:24:39 2012 +0200
+
+    cman init: clarify better comments for FENCE_JOIN=no
+    
+    (input from GSS)
+    
+    Related: rhbz#821016
+    
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+    Reviewed-by: Christine Caulfield <ccaulfie@redhat.com>
+
+diff --git a/cman/init.d/cman.in b/cman/init.d/cman.in
+index f39a9aa..9a0d726 100644
+--- a/cman/init.d/cman.in
++++ b/cman/init.d/cman.in
+@@ -126,9 +126,10 @@ fi
+ #     set to "yes", then the script will attempt to join the fence domain.
+ #     If FENCE_JOIN is set to any other value, the default behavior is
+ #     to join the fence domain (equivalent to "yes").
+-#     When setting FENCE_JOIN to "no", it is important to check 
+-#     DLM_CONTROLD_OPTS to reflect expected behavior regarding fencing
+-#     and quorum.
++#     When setting FENCE_JOIN to "no", it is important to also set
++#     DLM_CONTROLD_OPTS="-f0" (at least) for correct operation.
++#     Please note that clusters without fencing are not 
++#     supported by Red Hat except for MRG installations.
+ [ -z "$FENCE_JOIN" ] && FENCE_JOIN="yes"
+ 
+ # FENCED_OPTS -- allow extra options to be passed to fence daemon.
+diff --git a/cman/init.d/cman.init.defaults.in b/cman/init.d/cman.init.defaults.in
+index 6e7f47f..1b7913e 100644
+--- a/cman/init.d/cman.init.defaults.in
++++ b/cman/init.d/cman.init.defaults.in
+@@ -50,9 +50,10 @@
+ #     set to "yes", then the script will attempt to join the fence domain.
+ #     If FENCE_JOIN is set to any other value, the default behavior is
+ #     to join the fence domain (equivalent to "yes").
+-#     When setting FENCE_JOIN to "no", it is important to check
+-#     DLM_CONTROLD_OPTS to reflect expected behavior regarding fencing
+-#     and quorum.
++#     When setting FENCE_JOIN to "no", it is important to also set
++#     DLM_CONTROLD_OPTS="-f0" (at least) for correct operation.
++#     Please note that clusters without fencing are not 
++#     supported by Red Hat except for MRG installations.
+ #FENCE_JOIN="yes"
+ 
+ # FENCED_OPTS -- allow extra options to be passed to fence daemon.

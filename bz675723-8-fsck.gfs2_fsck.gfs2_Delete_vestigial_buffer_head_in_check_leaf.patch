@@ -1,0 +1,124 @@
+commit aa3bf1a5e2a5b59414f33f019ad7e71ecae3ae2f
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Mon Aug 8 13:28:08 2011 -0500
+
+    fsck.gfs2: fsck.gfs2: Delete vestigial buffer_head in check_leaf
+    
+    This patch eliminates a variable bh from all the check_leaf metawalk
+    functions because it is no longer referenced.
+    
+    rhbzs#675723
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index a06bcf2..541e468 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -687,7 +687,7 @@ static int check_leaf_blks(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 			}
+ 			gfs2_leaf_in(&leaf, lbh);
+ 			if (pass->check_leaf)
+-				error = pass->check_leaf(ip, leaf_no, lbh,
++				error = pass->check_leaf(ip, leaf_no,
+ 							 pass->private);
+ 
+ 			/*
+@@ -1461,10 +1461,9 @@ int delete_metadata(struct gfs2_inode *ip, uint64_t block,
+ 	return delete_block_if_notdup(ip, block, bh, _("metadata"), private);
+ }
+ 
+-int delete_leaf(struct gfs2_inode *ip, uint64_t block,
+-		struct gfs2_buffer_head *bh, void *private)
++int delete_leaf(struct gfs2_inode *ip, uint64_t block, void *private)
+ {
+-	return delete_block_if_notdup(ip, block, &bh, _("leaf"), private);
++	return delete_block_if_notdup(ip, block, NULL, _("leaf"), private);
+ }
+ 
+ int delete_data(struct gfs2_inode *ip, uint64_t block, void *private)
+@@ -1527,8 +1526,7 @@ static int alloc_data(struct gfs2_inode *ip, uint64_t block, void *private)
+ 	return 0;
+ }
+ 
+-static int alloc_leaf(struct gfs2_inode *ip, uint64_t block,
+-		      struct gfs2_buffer_head *bh, void *private)
++static int alloc_leaf(struct gfs2_inode *ip, uint64_t block, void *private)
+ {
+ 	uint8_t q;
+ 
+diff --git a/gfs2/fsck/metawalk.h b/gfs2/fsck/metawalk.h
+index c1e61fb..ea023b6 100644
+--- a/gfs2/fsck/metawalk.h
++++ b/gfs2/fsck/metawalk.h
+@@ -20,8 +20,7 @@ extern int delete_block(struct gfs2_inode *ip, uint64_t block,
+ 		 void *private);
+ extern int delete_metadata(struct gfs2_inode *ip, uint64_t block,
+ 			   struct gfs2_buffer_head **bh, int h, void *private);
+-extern int delete_leaf(struct gfs2_inode *ip, uint64_t block,
+-		struct gfs2_buffer_head *bh, void *private);
++extern int delete_leaf(struct gfs2_inode *ip, uint64_t block, void *private);
+ extern int delete_data(struct gfs2_inode *ip, uint64_t block, void *private);
+ extern int delete_eattr_indir(struct gfs2_inode *ip, uint64_t block, uint64_t parent,
+ 		       struct gfs2_buffer_head **bh, void *private);
+@@ -60,7 +59,7 @@ extern struct gfs2_inode *fsck_system_inode(struct gfs2_sbd *sdp,
+ struct metawalk_fxns {
+ 	void *private;
+ 	int (*check_leaf) (struct gfs2_inode *ip, uint64_t block,
+-			   struct gfs2_buffer_head *bh, void *private);
++			   void *private);
+ 	int (*check_metalist) (struct gfs2_inode *ip, uint64_t block,
+ 			       struct gfs2_buffer_head **bh, int h,
+ 			       void *private);
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index 40f1f73..8f399e1 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -32,8 +32,7 @@ struct block_count {
+ 	uint64_t ea_count;
+ };
+ 
+-static int leaf(struct gfs2_inode *ip, uint64_t block,
+-		struct gfs2_buffer_head *bh, void *private);
++static int leaf(struct gfs2_inode *ip, uint64_t block, void *private);
+ static int check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 			  struct gfs2_buffer_head **bh, int h, void *private);
+ static int undo_check_metalist(struct gfs2_inode *ip, uint64_t block,
+@@ -64,7 +63,7 @@ static int invalidate_metadata(struct gfs2_inode *ip, uint64_t block,
+ 			       struct gfs2_buffer_head **bh, int h,
+ 			       void *private);
+ static int invalidate_leaf(struct gfs2_inode *ip, uint64_t block,
+-			   struct gfs2_buffer_head *bh, void *private);
++			   void *private);
+ static int invalidate_data(struct gfs2_inode *ip, uint64_t block,
+ 			   void *private);
+ static int invalidate_eattr_indir(struct gfs2_inode *ip, uint64_t block,
+@@ -198,8 +197,7 @@ struct metawalk_fxns sysdir_fxns = {
+ 	.check_dentry = resuscitate_dentry,
+ };
+ 
+-static int leaf(struct gfs2_inode *ip, uint64_t block,
+-		struct gfs2_buffer_head *bh, void *private)
++static int leaf(struct gfs2_inode *ip, uint64_t block, void *private)
+ {
+ 	struct block_count *bc = (struct block_count *) private;
+ 
+@@ -854,7 +852,7 @@ static int invalidate_metadata(struct gfs2_inode *ip, uint64_t block,
+ }
+ 
+ static int invalidate_leaf(struct gfs2_inode *ip, uint64_t block,
+-			   struct gfs2_buffer_head *bh, void *private)
++			   void *private)
+ {
+ 	return mark_block_invalid(ip, block, ref_as_meta, _("leaf"));
+ }
+@@ -937,9 +935,9 @@ static int rangecheck_metadata(struct gfs2_inode *ip, uint64_t block,
+ }
+ 
+ static int rangecheck_leaf(struct gfs2_inode *ip, uint64_t block,
+-			   struct gfs2_buffer_head *bh, void *private)
++			   void *private)
+ {
+-	return rangecheck_block(ip, block, &bh, _("leaf"), private);
++	return rangecheck_block(ip, block, NULL, _("leaf"), private);
+ }
+ 
+ static int rangecheck_data(struct gfs2_inode *ip, uint64_t block,

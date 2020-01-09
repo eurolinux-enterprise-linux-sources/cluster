@@ -1,0 +1,92 @@
+commit 090957641013f2362f8fbb99ad30eb4b25a4f54e
+Author: Andrew Price <anprice@redhat.com>
+Date:   Fri Feb 27 18:43:53 2015 +0000
+
+    libgfs2: Make sure secontext gets freed
+    
+    Free sbd.secontext after is_pathname_mounted allocates it. As the RHEL6
+    metafs code has no construct/destruct model similar to upstream, the
+    secontext string has to be freed in a few places additional to
+    cleanup_metafs.
+    
+    Resolves: #1121693
+    
+    Signed-off-by: Andrew Price <anprice@redhat.com>
+
+diff --git a/gfs2/fsck/initialize.c b/gfs2/fsck/initialize.c
+index 9abdf0c..0c374eb 100644
+--- a/gfs2/fsck/initialize.c
++++ b/gfs2/fsck/initialize.c
+@@ -1566,6 +1566,7 @@ int initialize(struct gfs2_sbd *sdp, int force_check, int preen,
+ 			sizeof(sdp->device_name));
+ 		sdp->path_name = sdp->device_name; /* This gets overwritten */
+ 		is_mounted = is_pathname_mounted(sdp, &ro);
++		free(sdp->secontext);
+ 		/* If the device is busy, but not because it's mounted, fail.
+ 		   This protects against cases where the file system is LVM
+ 		   and perhaps mounted on a different node. */
+diff --git a/gfs2/libgfs2/misc.c b/gfs2/libgfs2/misc.c
+index 5ef4a2a..955e141 100644
+--- a/gfs2/libgfs2/misc.c
++++ b/gfs2/libgfs2/misc.c
+@@ -301,6 +301,7 @@ void cleanup_metafs(struct gfs2_sbd *sdp)
+ 	sigaction(SIGUSR2, &sa, NULL);
+ 	metafs_interrupted = 0;
+ 	remove_mtab_entry(sdp);
++	free(sdp->secontext);
+ }
+ 
+ static void sighandler(int error)
+diff --git a/gfs2/tool/misc.c b/gfs2/tool/misc.c
+index 37c81cd..506f590 100644
+--- a/gfs2/tool/misc.c
++++ b/gfs2/tool/misc.c
+@@ -324,6 +324,7 @@ void do_withdraw(int argc, char **argv)
+ 	if (optind == argc)
+ 		die("Usage: gfs2_tool withdraw <mountpoint>\n");
+ 
++	sbd.secontext = NULL;
+ 	sbd.path_name = argv[optind];
+ 	if (check_for_gfs2(&sbd)) {
+ 		if (errno == EINVAL)
+@@ -345,5 +346,6 @@ void do_withdraw(int argc, char **argv)
+ 				strerror(errno));
+ 		exit(-1);
+ 	}
++	free(sbd.secontext);
+ }
+ 
+diff --git a/gfs2/tool/tune.c b/gfs2/tool/tune.c
+index 4666291..92a7b6f 100644
+--- a/gfs2/tool/tune.c
++++ b/gfs2/tool/tune.c
+@@ -46,6 +46,7 @@ get_tune(int argc, char **argv)
+ 	if (optind == argc)
+ 		die( _("Usage: gfs2_tool gettune <mountpoint>\n"));
+ 
++	sbd.secontext = NULL;
+ 	sbd.path_name = argv[optind];
+ 	if (check_for_gfs2(&sbd)) {
+ 		if (errno == EINVAL)
+@@ -87,6 +88,7 @@ get_tune(int argc, char **argv)
+ 			printf("%s = %s\n", de->d_name, get_sysfs(fs, path));
+ 	}
+ 	closedir(d);
++	free(sbd.secontext);
+ }
+ 
+ /**
+@@ -105,6 +107,7 @@ set_tune(int argc, char **argv)
+ 	char *fs;
+ 	struct gfs2_sbd sbd;
+ 
++	sbd.secontext = NULL;
+ 	if (optind == argc)
+ 		die( _("Usage: gfs2_tool settune <mountpoint> <parameter> <value>\n"));
+ 	sbd.path_name = argv[optind++];
+@@ -141,4 +144,5 @@ set_tune(int argc, char **argv)
+ 				param, strerror(errno));
+ 		exit(-1);
+ 	}
++	free(sbd.secontext);
+ }

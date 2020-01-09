@@ -1,0 +1,77 @@
+commit 0031db202e1b6584c5069f7f3139c1303257a3aa
+Author: Andrew Price <anprice@redhat.com>
+Date:   Mon Feb 23 14:12:46 2015 +0000
+
+    libgfs2: Use a matching context mount option in mount_gfs2_meta
+    
+    On a system with SELinux enabled, if a gfs2 file system is mounted with
+    a context= option, the tools gfs2_quota, gfs2_tool, gfs2_grow and
+    gfs2_jadd will fail with "Device or resource busy". This is due to
+    SELinux failing the mount due to a mismatched context ("SELinux: mount
+    invalid.  Same superblock, different security settings").
+    
+    In order to work around this, parse the context option of the gfs2 mount
+    point in is_pathname_mounted() and use it in mount_gfs2_meta().
+    
+    Resolves: rhbz#1121693
+    
+    Signed-off-by: Andrew Price <anprice@redhat.com>
+
+diff --git a/gfs2/libgfs2/libgfs2.h b/gfs2/libgfs2/libgfs2.h
+index 9c20f11..25286d1 100644
+--- a/gfs2/libgfs2/libgfs2.h
++++ b/gfs2/libgfs2/libgfs2.h
+@@ -217,6 +217,7 @@ struct gfs2_sbd {
+ 
+ 	int device_fd;
+ 	int path_fd;
++	char *secontext;
+ 
+ 	uint64_t sb_addr;
+ 
+diff --git a/gfs2/libgfs2/misc.c b/gfs2/libgfs2/misc.c
+index 8e0ca6f..5ef4a2a 100644
+--- a/gfs2/libgfs2/misc.c
++++ b/gfs2/libgfs2/misc.c
+@@ -100,6 +100,24 @@ int compute_constants(struct gfs2_sbd *sdp)
+ 	return 0;
+ }
+ 
++/**
++ * Returns a duplicate of the 'context' mount option, or NULL if not found.
++ */
++static char *copy_context_opt(struct mntent *mnt)
++{
++	char *ctx, *end;
++
++	ctx = hasmntopt(mnt, "context");
++	if (ctx == NULL)
++		return NULL;
++
++	end = strchr(ctx, ',');
++	if (end == NULL)
++		return NULL;
++
++	return strndup(ctx, end - ctx);
++}
++
+ int is_pathname_mounted(struct gfs2_sbd *sdp, int *ro_mount)
+ {
+ 	FILE *fp;
+@@ -161,6 +179,7 @@ int is_pathname_mounted(struct gfs2_sbd *sdp, int *ro_mount)
+ 		return 0;
+ 	if (hasmntopt(mnt, MNTOPT_RO))
+                *ro_mount = 1;
++	sdp->secontext = copy_context_opt(mnt);
+ 	return 1; /* mounted */
+ }
+ 
+@@ -319,7 +338,7 @@ int mount_gfs2_meta(struct gfs2_sbd *sdp)
+ 	sigaction(SIGCONT, &sa, NULL);
+ 	sigaction(SIGUSR1, &sa, NULL);
+ 	sigaction(SIGUSR2, &sa, NULL);
+-	ret = mount(sdp->path_name, sdp->metafs_path, "gfs2meta", 0, NULL);
++	ret = mount(sdp->path_name, sdp->metafs_path, "gfs2meta", 0, sdp->secontext);
+ 	if (ret) {
+ 		rmdir(sdp->metafs_path);
+ 		return -1;

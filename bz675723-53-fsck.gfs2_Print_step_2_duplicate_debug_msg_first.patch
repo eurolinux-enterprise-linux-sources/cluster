@@ -1,0 +1,36 @@
+commit 165021e9be8503dd8ffc37edd2da71d1aa994df0
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Fri Jan 6 14:19:09 2012 -0600
+
+    fsck.gfs2: Print step 2 duplicate debug msg first
+    
+    In testing fsck.gfs2 I noticed that when duplicates were resolved,
+    the "step 2" debug message was printed after step 2 was actually
+    done.  That's misleading, so this patch changes it.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/pass1b.c b/gfs2/fsck/pass1b.c
+index da71f99..39c3289 100644
+--- a/gfs2/fsck/pass1b.c
++++ b/gfs2/fsck/pass1b.c
+@@ -642,15 +642,15 @@ static int handle_dup_blk(struct gfs2_sbd *sdp, struct duptree *b)
+ 	 *          directory inode referencing a data block as a leaf block.
+ 	 */
+ 	if (!last_reference) {
+-		last_reference = resolve_dup_references(sdp, b,
+-							&b->ref_inode_list,
+-							&dh, 0,
+-							acceptable_ref);
+ 		log_debug( _("----------------------------------------------\n"
+ 			     "Step 2: Eliminate references to block %llu "
+ 			     "(0x%llx) that need the wrong block type.\n"),
+ 			   (unsigned long long)b->block,
+ 			   (unsigned long long)b->block);
++		last_reference = resolve_dup_references(sdp, b,
++							&b->ref_inode_list,
++							&dh, 0,
++							acceptable_ref);
+ 	}
+ 	/* Step 3 - We have multiple dinodes referencing it as the correct
+ 	 *          type.  Just blast one of them.

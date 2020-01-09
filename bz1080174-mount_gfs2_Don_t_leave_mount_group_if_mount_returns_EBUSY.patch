@@ -1,0 +1,59 @@
+commit 0e5ba8bc5938c8b92d28d1a807616d08bd3ce47e
+Author: Andrew Price <anprice@redhat.com>
+Date:   Thu Mar 27 00:48:00 2014 -0500
+
+    mount.gfs2: Don't leave mount group if mount returns EBUSY
+    
+    On attempting to mount a gfs2 fs a second time, mount.gfs2 would leave the
+    mount group causing problems for the first mounted fs. This patch adds a check
+    for EBUSY so that mount.gfs2 no longer leaves when the fs is already mounted.
+    
+    Also the existing code was expecting errno to stay the same across library
+    calls so a new variable is added to store the value to prevent future errno
+    confusion.
+    
+    Based on the original EBUSY fix by John Ruemker.
+    
+    Resolves: rhbz#1080174
+    
+    Signed-off-by: Andrew Price <anprice@redhat.com>
+
+diff --git a/gfs2/mount/mount.gfs2.c b/gfs2/mount/mount.gfs2.c
+index d8e19a7..f1d6cfd 100644
+--- a/gfs2/mount/mount.gfs2.c
++++ b/gfs2/mount/mount.gfs2.c
+@@ -161,6 +161,7 @@ int main(int argc, char **argv)
+ 	struct gen_sb sb;
+ 	char *proto;
+ 	int rv = 0;
++	int mnterr = 0;
+ 
+ 	memset(&mo, 0, sizeof(mo));
+ 	memset(&sb, 0, sizeof(sb));
+@@ -202,19 +203,19 @@ int main(int argc, char **argv)
+ 		die("error mounting lockproto %s\n", proto);
+ 
+ 	rv = mount(mo.dev, mo.dir, fsname, mo.flags, mo.extra_plus);
++	mnterr = errno;
+ 	if (rv) {
+-		log_debug("mount(2) failed error %d errno %d", rv, errno);
++		log_debug("mount(2) failed error %d errno %d", rv, mnterr);
+ 		mount_done_lockproto(proto, &mo, &sb, rv);
+ 
+-		if (!(mo.flags & MS_REMOUNT))
+-			umount_lockproto(proto, &mo, &sb, errno);
++		if (!(mo.flags & MS_REMOUNT) && mnterr != EBUSY)
++			umount_lockproto(proto, &mo, &sb, mnterr);
+ 
+-		if (errno == EBUSY)
++		if (mnterr == EBUSY)
+ 			die("%s already mounted or %s busy\n", mo.dev, mo.dir);
+-		else if (errno == EUSERS)
++		else if (mnterr == EUSERS)
+ 			die("Too many nodes mounting filesystem, no free journals\n");
+-		die("error mounting %s on %s: %s\n", mo.dev, mo.dir,
+-		    strerror(errno));
++		die("error mounting %s on %s: %s\n", mo.dev, mo.dir, strerror(mnterr));
+ 	}
+ 	log_debug("mount(2) ok");
+ 	mount_done_lockproto(proto, &mo, &sb, 0);

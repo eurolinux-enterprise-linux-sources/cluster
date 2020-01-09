@@ -1,0 +1,146 @@
+commit c63b6da44b40a40d646ab546ae5b107894fb6043
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Fri Mar 8 10:12:16 2013 -0700
+
+    fsck.gfs2: reprocess inodes when blocks are added
+    
+    This patch adds several calls to reprocess_inode when functions
+    may have potentially added blocks to a dinode. This happens, for
+    example, when leaf blocks are split or new leaf blocks are added.
+    The purpose of reprocessing the inode is to properly mark the new
+    blocks in the fsck blockmap. If we don't, the new blocks may be
+    flagged as wrong in the bitmap, and set free in pass5.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index 8df32a0..1f0c221 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -1472,9 +1472,12 @@ int check_dir(struct gfs2_sbd *sdp, uint64_t block, struct metawalk_fxns *pass)
+ {
+ 	struct gfs2_inode *ip;
+ 	int error = 0;
++	uint64_t cur_blks;
+ 
+ 	ip = fsck_load_inode(sdp, block);
+ 
++	cur_blks = ip->i_di.di_blocks;
++
+ 	if (ip->i_di.di_flags & GFS2_DIF_EXHASH)
+ 		error = check_leaf_blks(ip, pass);
+ 	else
+@@ -1483,6 +1486,9 @@ int check_dir(struct gfs2_sbd *sdp, uint64_t block, struct metawalk_fxns *pass)
+ 	if (error < 0)
+ 		stack;
+ 
++	if (ip->i_di.di_blocks != cur_blks)
++		reprocess_inode(ip, _("Current"));
++
+ 	fsck_inode_put(&ip); /* does a brelse */
+ 	return error;
+ }
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index fa74b76..95138fe 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -1021,6 +1021,7 @@ static int handle_ip(struct gfs2_sbd *sdp, struct gfs2_inode *ip)
+ 	struct block_count bc = {0};
+ 	long bad_pointers;
+ 	uint64_t block = ip->i_bh->b_blocknr;
++	uint64_t lf_blks = 0;
+ 
+ 	bad_pointers = 0L;
+ 
+@@ -1082,8 +1083,18 @@ static int handle_ip(struct gfs2_sbd *sdp, struct gfs2_inode *ip)
+ 		}
+ 	}
+ 
++	if (lf_dip)
++		lf_blks = lf_dip->i_di.di_blocks;
++
+ 	pass1_fxns.private = &bc;
+ 	error = check_metatree(ip, &pass1_fxns);
++
++	/* Pass1 may have added some blocks to lost+found by virtue of leafs
++	   that were misplaced. If it did, we need to reprocess lost+found
++	   to correctly account for its blocks. */
++	if (lf_dip && lf_dip->i_di.di_blocks != lf_blks)
++		reprocess_inode(lf_dip, "lost+found");
++
+ 	if (fsck_abort || error < 0)
+ 		return 0;
+ 	if (error > 0) {
+diff --git a/gfs2/fsck/pass2.c b/gfs2/fsck/pass2.c
+index f68faab..9f477b8 100644
+--- a/gfs2/fsck/pass2.c
++++ b/gfs2/fsck/pass2.c
+@@ -1446,7 +1446,7 @@ struct metawalk_fxns pass2_fxns = {
+ static int check_system_dir(struct gfs2_inode *sysinode, const char *dirname,
+ 		     int builder(struct gfs2_sbd *sdp))
+ {
+-	uint64_t iblock = 0;
++	uint64_t iblock = 0, cur_blks;
+ 	struct dir_status ds = {0};
+ 	char *filename;
+ 	int filename_len;
+@@ -1461,12 +1461,15 @@ static int check_system_dir(struct gfs2_inode *sysinode, const char *dirname,
+ 	}
+ 	pass2_fxns.private = (void *) &ds;
+ 	if (ds.q == gfs2_bad_block) {
++		cur_blks = sysinode->i_di.di_blocks;
+ 		/* First check that the directory's metatree is valid */
+ 		error = check_metatree(sysinode, &pass2_fxns);
+ 		if (error < 0) {
+ 			stack;
+ 			return error;
+ 		}
++		if (sysinode->i_di.di_blocks != cur_blks)
++			reprocess_inode(sysinode, _("System inode"));
+ 	}
+ 	error = check_dir(sysinode->i_sbd, iblock, &pass2_fxns);
+ 	if (skip_this_pass || fsck_abort) /* if asked to skip the rest */
+@@ -1486,8 +1489,7 @@ static int check_system_dir(struct gfs2_inode *sysinode, const char *dirname,
+ 	if (!ds.dotdir) {
+ 		log_err( _("No '.' entry found for %s directory.\n"), dirname);
+ 		if (query( _("Is it okay to add '.' entry? (y/n) "))) {
+-			uint64_t cur_blks = sysinode->i_di.di_blocks;
+-
++			cur_blks = sysinode->i_di.di_blocks;
+ 			sprintf(tmp_name, ".");
+ 			filename_len = strlen(tmp_name); /* no trailing NULL */
+ 			if (!(filename = malloc(sizeof(char) * filename_len))) {
+@@ -1578,7 +1580,7 @@ static inline int is_system_dir(struct gfs2_sbd *sdp, uint64_t block)
+  */
+ int pass2(struct gfs2_sbd *sdp)
+ {
+-	uint64_t dirblk;
++	uint64_t dirblk, cur_blks;
+ 	uint8_t q;
+ 	struct dir_status ds = {0};
+ 	struct gfs2_inode *ip;
+@@ -1640,12 +1642,15 @@ int pass2(struct gfs2_sbd *sdp)
+ 			/* First check that the directory's metatree
+ 			 * is valid */
+ 			ip = fsck_load_inode(sdp, dirblk);
++			cur_blks = ip->i_di.di_blocks;
+ 			error = check_metatree(ip, &pass2_fxns);
+ 			fsck_inode_put(&ip);
+ 			if (error < 0) {
+ 				stack;
+ 				return error;
+ 			}
++			if (ip->i_di.di_blocks != cur_blks)
++				reprocess_inode(ip, "current");
+ 		}
+ 		error = check_dir(sdp, dirblk, &pass2_fxns);
+ 		if (skip_this_pass || fsck_abort) /* if asked to skip the rest */
+@@ -1704,8 +1709,6 @@ int pass2(struct gfs2_sbd *sdp)
+ 				(unsigned long long)dirblk);
+ 
+ 			if (query( _("Is it okay to add '.' entry? (y/n) "))) {
+-				uint64_t cur_blks;
+-
+ 				sprintf(tmp_name, ".");
+ 				filename_len = strlen(tmp_name); /* no trailing
+ 								    NULL */

@@ -1,0 +1,63 @@
+commit 5a0a299ea95d689d90da1d71aec88753d26efa5f
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Mon Aug 29 07:46:09 2011 +0200
+
+    config: allow cman to configure uid/gid for corosync IPC
+    
+    Resolves: rhbz#733345
+    
+    Reviewed-by: Jan Friesse <jfriesse@redhat.com>
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/cman/daemon/cman-preconfig.c b/cman/daemon/cman-preconfig.c
+index 6d52be1..16d89e5 100644
+--- a/cman/daemon/cman-preconfig.c
++++ b/cman/daemon/cman-preconfig.c
+@@ -1558,6 +1558,7 @@ static int cmanpre_readconfig(struct objdb_iface_ver0 *objdb, const char **error
+ 		ret = copy_tree_to_root(objdb, "amf", 0);
+ 		ret = copy_tree_to_root(objdb, "aisexec", 0);
+ 		ret = copy_tree_to_root(objdb, "service", 1);
++		ret = copy_tree_to_root(objdb, "uidgid", 0);
+ 	}
+ 
+ 	objdb->object_find_create(cluster_parent_handle, "cman", strlen("cman"), &find_handle);
+diff --git a/config/tools/xml/cluster.rng.in.head b/config/tools/xml/cluster.rng.in.head
+index 7696533..1afa9e8 100644
+--- a/config/tools/xml/cluster.rng.in.head
++++ b/config/tools/xml/cluster.rng.in.head
+@@ -7,6 +7,7 @@ xmlns:rha="http://redhat.com/~pkennedy/annotation_namespace/cluster_conf_annot_n
+ cluster
+ - cman
+ - totem
++- uidgid
+ - quorumd
+ - fence_daemon
+ - fence_xvmd
+@@ -169,6 +170,27 @@ To validate your cluster.conf against this schema, run:
+  </optional>
+ <!-- end cman block -->
+ 
++<!-- uidgid block -->
++ <optional>
++  <zeroOrMore>
++   <element name="uidgid" rha:description="Access control to corosync IPC">
++    <optional>
++     <attribute name="uid" rha:description="This is an unprivileged username,
++         as globally available to the system via /etc/passwd, including nis/ldap,
++         allowed to connect to corosync IPC. This value cannot be updated at runtime,
++         a full cman restart is required." rha:default="" rha:samble="userfoo"/>
++    </optional>
++    <optional>
++     <attribute name="gid" rha:description="This is an unprivileged group name,
++         as globally available to the system via /etc/group, including nis/ldap,
++         allowed to connect to corosync IPC. This value cannot be updated at runtime,
++         a full cman restart is required." rha:default="" rha:samble="groupfoo"/>
++    </optional>
++   </element>
++  </zeroOrMore>
++ </optional>
++<!-- end uidgid block -->
++
+ <!-- totem block -->
+  <optional>
+   <element name="totem" rha:description="OpenAIS msg transport

@@ -1,0 +1,81 @@
+From 3bb261e473a972f0b183be3870794c6e4df8f97d Mon Sep 17 00:00:00 2001
+From: Bob Peterson <rpeterso@redhat.com>
+Date: Wed, 19 Dec 2012 07:47:15 -0600
+Subject: [PATCH 7/8] gfs2_convert: mask out proper bits when identifying
+ symlinks
+
+This patch masks out the proper file type bit in order to
+distinguish files from symlinks. Include stat.h defines:
+So the check for "di_mode & S_IFLNK" will match regular files,
+not just symlinks. The problem was that gfs2_convert was matching
+regular files and treating them as symlinks, which destroyed
+the di_blocks field in the dinode. The patch also has some minor
+cleanups.
+
+rhbz#888053
+---
+ gfs2/convert/gfs2_convert.c | 13 ++++++-------
+ 1 file changed, 6 insertions(+), 7 deletions(-)
+
+diff --git a/gfs2/convert/gfs2_convert.c b/gfs2/convert/gfs2_convert.c
+index 6f3dfb3..9594908 100644
+--- a/gfs2/convert/gfs2_convert.c
++++ b/gfs2/convert/gfs2_convert.c
+@@ -816,7 +816,6 @@ static int has_cdpn(const char *str)
+ 
+ static int fix_cdpn_symlink(struct gfs2_sbd *sbp, struct gfs2_buffer_head *bh, struct gfs2_inode *ip)
+ {
+-	int ret = 0;
+ 	char *linkptr = NULL;
+ 
+ 	if (ip->i_di.di_height != 0)
+@@ -837,7 +836,7 @@ static int fix_cdpn_symlink(struct gfs2_sbd *sbp, struct gfs2_buffer_head *bh, s
+ 				  (osi_list_t *)&cdpns_to_fix);
+ 	}
+ 
+-	return ret;
++	return 0;
+ }
+ 
+ /*
+@@ -852,7 +851,7 @@ static int fix_cdpn_symlink(struct gfs2_sbd *sbp, struct gfs2_buffer_head *bh, s
+  */
+ static int fix_xattr(struct gfs2_sbd *sbp, struct gfs2_buffer_head *bh, struct gfs2_inode *ip)
+ {
+-	int ret = 0, len, old_hdr_sz, new_hdr_sz;
++	int len, old_hdr_sz, new_hdr_sz;
+ 	struct gfs2_buffer_head *eabh;
+ 	char *buf;
+ 
+@@ -875,7 +874,7 @@ static int fix_xattr(struct gfs2_sbd *sbp, struct gfs2_buffer_head *bh, struct g
+ 	}
+         brelse(eabh);
+ 
+-	return ret;
++	return 0;
+ }
+ 
+ /* ------------------------------------------------------------------------- */
+@@ -894,8 +893,8 @@ static int adjust_inode(struct gfs2_sbd *sbp, struct gfs2_buffer_head *bh)
+ 	inode_was_gfs1 = (inode->i_di.di_num.no_formal_ino ==
+ 					  inode->i_di.di_num.no_addr);
+ 	/* Fix the inode number: */
+-	inode->i_di.di_num.no_formal_ino = sbp->md.next_inum;           ;
+-	
++	inode->i_di.di_num.no_formal_ino = sbp->md.next_inum;
++
+ 	/* Fix the inode type: gfs1 uses di_type, gfs2 uses di_mode. */
+ 	inode->i_di.di_mode &= ~S_IFMT;
+ 	switch (inode->i_di.__pad1) { /* formerly di_type */
+@@ -961,7 +960,7 @@ static int adjust_inode(struct gfs2_sbd *sbp, struct gfs2_buffer_head *bh)
+ 		if (adjust_indirect_blocks(sbp, inode))
+ 			return -1;
+ 		/* Check for cdpns */
+-		if (inode->i_di.di_mode & S_IFLNK) {
++		if (S_ISLNK(inode->i_di.di_mode)) {
+ 			ret = fix_cdpn_symlink(sbp, bh, inode);
+ 			if (ret)
+ 				return -1;
+-- 
+1.7.11.7
+

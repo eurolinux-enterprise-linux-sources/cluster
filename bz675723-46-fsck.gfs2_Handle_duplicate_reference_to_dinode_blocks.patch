@@ -1,0 +1,348 @@
+commit d4e3d33ad9c93930e044f571f25cf04e829a3d15
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Thu Aug 18 11:49:07 2011 -0500
+
+    fsck.gfs2: Handle duplicate reference to dinode blocks
+    
+    The fsck.gfs2 tool was not properly handling cases where dinode
+    blocks were referenced by other dinodes as another type.  For example,
+    if some dinode wrongly thought that another dinode was one of its
+    metadata blocks or data blocks.  This patch fixes that situation by
+    introducing a new "ref_is_inode" duplicate reference type.  The only
+    thing that should ever reference a dinode is a directory, and that's
+    a special case.  Any other reference is wrong and should be removed.
+    This patch takes care of those situations.
+    
+    The patch also moves the code that marks dinodes as their
+    proper type to a new function in util.c called set_ip_blockmap.
+    That allows duplicate processing to set the proper type in the
+    blockmap in cases where the invalid reference was found first
+    (before the dinode itself was encountered).  It also removes the
+    redundant "reftype_str" array of descriptions in favor of a central
+    one already in util.c called "reftypes".
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/fsck.h b/gfs2/fsck/fsck.h
+index e2640d8..edd73d7 100644
+--- a/gfs2/fsck/fsck.h
++++ b/gfs2/fsck/fsck.h
+@@ -61,10 +61,13 @@ struct duptree {
+ };
+ 
+ enum dup_ref_type {
+-	ref_as_data = 0,
+-	ref_as_meta = 1,
+-	ref_as_ea   = 2,
+-	ref_types   = 3
++	ref_as_data = 0, /* dinode references this block as a data block */
++	ref_as_meta = 1, /* dinode references this block as a metadata block */
++	ref_as_ea   = 2, /* dinode references this block as an extended attr */
++	ref_is_inode= 3, /* The reference is itself a dinode.  In other words,
++			    it's a dinode, not pointed to as data or
++			    metadata */
++	ref_types   = 4,
+ };
+ 
+ struct inode_with_dups {
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index 515f50a..32ebfba 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -1143,7 +1143,6 @@ static int handle_ip(struct gfs2_sbd *sdp, struct gfs2_inode *ip)
+ 	struct block_count bc = {0};
+ 	long bad_pointers;
+ 	uint64_t block = ip->i_bh->b_blocknr;
+-	uint32_t mode;
+ 
+ 	bad_pointers = 0L;
+ 
+@@ -1164,49 +1163,8 @@ static int handle_ip(struct gfs2_sbd *sdp, struct gfs2_inode *ip)
+ 		return 0;
+ 	}
+ 
+-	if (sdp->gfs1)
+-		mode = gfs_to_gfs2_mode(ip->i_di.__pad1);
+-	else
+-		mode = ip->i_di.di_mode & S_IFMT;
+-
+-	switch (mode) {
+-	case S_IFDIR:
+-		if (fsck_blockmap_set(ip, block, _("directory"),
+-				      gfs2_inode_dir))
+-			goto bad_dinode;
+-		if (!dirtree_insert(block))
+-			goto bad_dinode;
+-		break;
+-	case S_IFREG:
+-		if (fsck_blockmap_set(ip, block, _("file"), gfs2_inode_file))
+-			goto bad_dinode;
+-		break;
+-	case S_IFLNK:
+-		if (fsck_blockmap_set(ip, block, _("symlink"),
+-				      gfs2_inode_lnk))
+-			goto bad_dinode;
+-		break;
+-	case S_IFBLK:
+-		if (fsck_blockmap_set(ip, block, _("block device"),
+-				      gfs2_inode_device))
+-			goto bad_dinode;
+-		break;
+-	case S_IFCHR:
+-		if (fsck_blockmap_set(ip, block, _("character device"),
+-				      gfs2_inode_device))
+-			goto bad_dinode;
+-		break;
+-	case S_IFIFO:
+-		if (fsck_blockmap_set(ip, block, _("fifo"),
+-				      gfs2_inode_fifo))
+-			goto bad_dinode;
+-		break;
+-	case S_IFSOCK:
+-		if (fsck_blockmap_set(ip, block, _("socket"),
+-				      gfs2_inode_sock))
+-			goto bad_dinode;
+-		break;
+-	default:
++	error = set_ip_blockmap(ip, 1);
++	if (error == -EINVAL) {
+ 		/* We found a dinode that has an invalid mode, so we can't
+ 		   tell if it's a data file, directory or a socket.
+ 		   Regardless, we have to invalidate its metadata in case there
+@@ -1227,7 +1185,9 @@ static int handle_ip(struct gfs2_sbd *sdp, struct gfs2_inode *ip)
+ 				      gfs2_inode_invalid))
+ 			goto bad_dinode;
+ 		return 0;
+-	}
++	} else if (error)
++		goto bad_dinode;
++
+ 	if (set_di_nlink(ip))
+ 		goto bad_dinode;
+ 
+diff --git a/gfs2/fsck/pass1b.c b/gfs2/fsck/pass1b.c
+index 003d696..b7be683 100644
+--- a/gfs2/fsck/pass1b.c
++++ b/gfs2/fsck/pass1b.c
+@@ -13,10 +13,6 @@
+ #include "metawalk.h"
+ #include "inode_hash.h"
+ 
+-const char *reftype_str[ref_types + 1] = {"data", "metadata",
+-					  "extended attribute",
+-					  "unimportant"};
+-
+ struct fxn_info {
+ 	uint64_t block;
+ 	int found;
+@@ -347,6 +343,10 @@ static int find_block_ref(struct gfs2_sbd *sdp, uint64_t inode)
+ 			     (unsigned long long)inode);
+ 		return 1;
+ 	}
++	/* Check to see if this inode was referenced by another by mistake */
++	add_duplicate_ref(ip, inode, ref_is_inode, 1, INODE_VALID);
++
++	/* Check this dinode's metadata for references to known duplicates */
+ 	error = check_metatree(ip, &find_refs);
+ 	if (error < 0) {
+ 		stack;
+@@ -374,19 +374,25 @@ static int find_block_ref(struct gfs2_sbd *sdp, uint64_t inode)
+    are the same type, and if so, return the type. */
+ static enum dup_ref_type get_ref_type(struct inode_with_dups *id)
+ {
+-	if (id->reftypecount[ref_as_ea] &&
+-	    !id->reftypecount[ref_as_data] &&
+-	    !id->reftypecount[ref_as_meta])
+-		return ref_as_ea;
+-	if (!id->reftypecount[ref_as_ea] &&
+-	    id->reftypecount[ref_as_data] &&
+-	    !id->reftypecount[ref_as_meta])
+-		return ref_as_data;
+-	if (!id->reftypecount[ref_as_ea] &&
+-	    !id->reftypecount[ref_as_data] &&
+-	    id->reftypecount[ref_as_meta])
+-		return ref_as_meta;
+-	return ref_types; /* multiple references */
++	enum dup_ref_type t, i;
++	int found_type_with_ref;
++	int found_other_types;
++
++	for (t = ref_as_data; t < ref_types; t++) {
++		found_type_with_ref = 0;
++		found_other_types = 0;
++		for (i = ref_as_data; i < ref_types; i++) {
++			if (id->reftypecount[i]) {
++				if (t == i)
++					found_type_with_ref = 1;
++				else
++					found_other_types = 1;
++			}
++		}
++		if (found_type_with_ref)
++			return found_other_types ? ref_types : t;
++	}
++	return ref_types;
+ }
+ 
+ static void log_inode_reference(struct duptree *b, osi_list_t *tmp, int inval)
+@@ -396,9 +402,10 @@ static void log_inode_reference(struct duptree *b, osi_list_t *tmp, int inval)
+ 
+ 	id = osi_list_entry(tmp, struct inode_with_dups, list);
+ 	if (id->dup_count == 1)
+-		sprintf(reftypestring, "as %s", reftype_str[get_ref_type(id)]);
++		sprintf(reftypestring, "as %s", reftypes[get_ref_type(id)]);
+ 	else
+-		sprintf(reftypestring, "%d/%d/%d",
++		sprintf(reftypestring, "%d/%d/%d/%d",
++			id->reftypecount[ref_is_inode],
+ 			id->reftypecount[ref_as_data],
+ 			id->reftypecount[ref_as_meta],
+ 			id->reftypecount[ref_as_ea]);
+@@ -484,8 +491,7 @@ static int resolve_dup_references(struct gfs2_sbd *sdp, struct duptree *b,
+ 			  (unsigned long long)id->block_no,
+ 			  (unsigned long long)b->block,
+ 			  (unsigned long long)b->block,
+-			  reftype_str[this_ref],
+-			  reftype_str[acceptable_ref]);
++			  reftypes[this_ref], reftypes[acceptable_ref]);
+ 		if (!(query( _("Okay to delete %s inode %lld (0x%llx)? "
+ 			       "(y/n) "),
+ 			     (inval ? _("invalidated") : ""),
+@@ -511,7 +517,7 @@ static int resolve_dup_references(struct gfs2_sbd *sdp, struct duptree *b,
+ 		clear_dup_fxns.private = (void *) dh;
+ 		/* Clear the EAs for the inode first */
+ 		check_inode_eattr(ip, &clear_dup_fxns);
+-		/* If the dup wasn't only in the EA, clear the inode */
++		/* If the dup was in data or metadata, clear the dinode */
+ 		if (id->reftypecount[ref_as_data] ||
+ 		    id->reftypecount[ref_as_meta])
+ 			check_metatree(ip, &clear_dup_fxns);
+@@ -577,7 +583,12 @@ static int handle_dup_blk(struct gfs2_sbd *sdp, struct duptree *b)
+ 	ctype = ((struct gfs2_meta_header *)(bh->b_data))->mh_type;
+ 	brelse(bh);
+ 
++	/* If this is a dinode, any references to it (except in directory
++	   entries) are invalid and should be deleted. */
+ 	if (be32_to_cpu(cmagic) == GFS2_MAGIC &&
++	    be32_to_cpu(ctype) == GFS2_METATYPE_DI)
++		acceptable_ref = ref_is_inode;
++	else if (be32_to_cpu(cmagic) == GFS2_MAGIC &&
+ 	    (be32_to_cpu(ctype) == GFS2_METATYPE_EA ||
+ 	     be32_to_cpu(ctype) == GFS2_METATYPE_ED))
+ 		acceptable_ref = ref_as_ea;
+@@ -689,6 +700,8 @@ static int handle_dup_blk(struct gfs2_sbd *sdp, struct duptree *b)
+ 			fsck_blockmap_set(ip, b->block,
+ 					  _("reference-repaired leaf"),
+ 					  gfs2_block_free);
++		} else if (id->reftypecount[ref_is_inode]) {
++			set_ip_blockmap(ip, 0); /* 0=do not add to dirtree */
+ 		} else if (id->reftypecount[ref_as_data]) {
+ 			fsck_blockmap_set(ip, b->block,
+ 					  _("reference-repaired data"),
+diff --git a/gfs2/fsck/util.c b/gfs2/fsck/util.c
+index 4075aec..69bf328 100644
+--- a/gfs2/fsck/util.c
++++ b/gfs2/fsck/util.c
+@@ -10,9 +10,12 @@
+ 
+ #include "libgfs2.h"
+ #include "fs_bits.h"
++#include "metawalk.h"
+ #include "util.h"
+ 
+-const char *reftypes[3] = {"data", "metadata", "extended attribute"};
++const char *reftypes[ref_types + 1] = {"data", "metadata",
++				       "extended attribute", "itself",
++				       "unimportant"};
+ 
+ void big_file_comfort(struct gfs2_inode *ip, uint64_t blks_checked)
+ {
+@@ -452,3 +455,69 @@ void *gfs2_bmap_destroy(struct gfs2_sbd *sdp, struct gfs2_bmap *il)
+ 	gfs2_special_free(&sdp->eattr_blocks);
+ 	return il;
+ }
++
++/* set_ip_blockmap - set the blockmap for a dinode
++ *
++ * instree: Set to 1 if directories should be inserted into the directory tree
++ *          otherwise 0.
++ * returns: 0 if no error, -EINVAL if dinode has a bad mode, -EPERM on error
++ */
++int set_ip_blockmap(struct gfs2_inode *ip, int instree)
++{
++	uint64_t block = ip->i_bh->b_blocknr;
++	struct gfs2_sbd *sdp = ip->i_sbd;
++	uint32_t mode;
++
++	if (sdp->gfs1)
++		mode = gfs_to_gfs2_mode(ip->i_di.__pad1);
++	else
++		mode = ip->i_di.di_mode & S_IFMT;
++
++	switch (mode) {
++	case S_IFDIR:
++		if (fsck_blockmap_set(ip, block, _("directory"),
++				      gfs2_inode_dir))
++			goto bad_dinode;
++		if (instree && !dirtree_insert(block))
++			goto bad_dinode;
++		break;
++	case S_IFREG:
++		if (fsck_blockmap_set(ip, block, _("file"), gfs2_inode_file))
++			goto bad_dinode;
++		break;
++	case S_IFLNK:
++		if (fsck_blockmap_set(ip, block, _("symlink"),
++				      gfs2_inode_lnk))
++			goto bad_dinode;
++		break;
++	case S_IFBLK:
++		if (fsck_blockmap_set(ip, block, _("block device"),
++				      gfs2_inode_device))
++			goto bad_dinode;
++		break;
++	case S_IFCHR:
++		if (fsck_blockmap_set(ip, block, _("character device"),
++				      gfs2_inode_device))
++			goto bad_dinode;
++		break;
++	case S_IFIFO:
++		if (fsck_blockmap_set(ip, block, _("fifo"),
++				      gfs2_inode_fifo))
++			goto bad_dinode;
++		break;
++	case S_IFSOCK:
++		if (fsck_blockmap_set(ip, block, _("socket"),
++				      gfs2_inode_sock))
++			goto bad_dinode;
++		break;
++	default:
++		fsck_blockmap_set(ip, block, _("invalid mode"),
++				  gfs2_inode_invalid);
++		return -EINVAL;
++	}
++	return 0;
++
++bad_dinode:
++	stack;
++	return -EPERM;
++}
+diff --git a/gfs2/fsck/util.h b/gfs2/fsck/util.h
+index fd75212..6581cb1 100644
+--- a/gfs2/fsck/util.h
++++ b/gfs2/fsck/util.h
+@@ -21,7 +21,7 @@ extern struct inode_with_dups *find_dup_ref_inode(struct duptree *dt,
+ 						  struct gfs2_inode *ip);
+ extern void dup_listent_delete(struct inode_with_dups *id);
+ 
+-extern const char *reftypes[3];
++extern const char *reftypes[ref_types + 1];
+ 
+ static inline uint8_t block_type(uint64_t bblock)
+ {
+@@ -170,4 +170,5 @@ extern struct gfs2_bmap *gfs2_bmap_create(struct gfs2_sbd *sdp, uint64_t size,
+ extern void *gfs2_bmap_destroy(struct gfs2_sbd *sdp, struct gfs2_bmap *il);
+ extern int gfs2_blockmap_set(struct gfs2_bmap *il, uint64_t block,
+ 			     enum gfs2_mark_block mark);
++extern int set_ip_blockmap(struct gfs2_inode *ip, int instree);
+ #endif /* __UTIL_H__ */

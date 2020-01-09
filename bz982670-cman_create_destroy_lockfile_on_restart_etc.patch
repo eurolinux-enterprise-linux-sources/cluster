@@ -1,0 +1,81 @@
+commit ea7368961f57b06d7553977275beec3f261191a2
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Thu Jul 11 09:48:00 2013 +0200
+
+    cman init: fix handling of lock file
+    
+    missing handling of lock file in operations other than start/stop
+    could lead in a situation where cman was running without
+    a lock file.
+    
+    Resolves: rhbz#982670
+    
+    Original patch by Shane Bradley <sbradley@redhat.com>
+    
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/cman/init.d/cman.in b/cman/init.d/cman.in
+index 0f40097..384fa2f 100644
+--- a/cman/init.d/cman.in
++++ b/cman/init.d/cman.in
+@@ -738,7 +738,6 @@ tune_dlm_config()
+ 
+ 	return 0
+ }
+-	
+ 
+ start()
+ {
+@@ -777,13 +776,13 @@ start()
+ 		none \
+ 		"Mounting configfs"
+ 
+-	[ "$breakpoint" = "setup" ] && exit 0
++	[ "$breakpoint" = "setup" ] && return 0
+ 
+ 	runwrap start_cman \
+ 		none \
+ 		"Starting cman"
+ 
+-	[ "$breakpoint" = "join" ] && exit 0
++	[ "$breakpoint" = "join" ] && return 0
+ 
+ 	runwrap start_qdiskd \
+ 		qdiskd_enabled \
+@@ -793,7 +792,7 @@ start()
+ 		none \
+ 		"Waiting for quorum"
+ 
+-	[ "$breakpoint" = "quorum" ] && exit 0
++	[ "$breakpoint" = "quorum" ] && return 0
+ 
+ 	runwrap start_groupd \
+ 		groupd_enabled \
+@@ -823,7 +822,7 @@ start()
+ 		cmannotifyd_enabled \
+ 		"Starting cmannotifyd"
+ 
+-	[ "$breakpoint" = "daemons" ] && exit 0
++	[ "$breakpoint" = "daemons" ] && return 0
+ 
+ 	fence_sanlock_check
+ 
+@@ -953,14 +952,14 @@ stop)
+ ;;
+ restart|reload|force-reload)
+ 	cmanremove=remove
+-	stop
+-	start
++	stop && rm -f $LOCK_FILE
++	start && touch $LOCK_FILE
+ ;;
+ condrestart|try-restart)
+ 	if cmanstatus; then
+ 		cmanremove=remove
+-		stop
+-		start
++		stop && rm -f $LOCK_FILE
++		start && touch $LOCK_FILE
+ 	fi
+ ;;
+ status)

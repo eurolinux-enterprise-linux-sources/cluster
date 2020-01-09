@@ -1,0 +1,132 @@
+commit d01bf561a8a3470335cf0a3832715fda7b7cf0f4
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Wed Aug 10 14:07:45 2011 -0500
+
+    libgfs2: eliminate gfs1_rindex_read
+    
+    Now that function rindex_read is able to handle gfs1 file reading,
+    this patch eliminates the gfs1-specific function gfs1_rindex_read.
+    
+    rhbz#675723
+
+diff --git a/gfs2/edit/hexedit.c b/gfs2/edit/hexedit.c
+index 903f169..abb8ef0 100644
+--- a/gfs2/edit/hexedit.c
++++ b/gfs2/edit/hexedit.c
+@@ -1756,7 +1756,7 @@ static int block_has_extended_info(void)
+ /* ------------------------------------------------------------------------ */
+ static void read_superblock(int fd)
+ {
+-	int count;
++	int count, sane;
+ 
+ 	sbd1 = (struct gfs_sb *)&sbd.sd_sb;
+ 	ioctl(fd, BLKFLSBUF, 0);
+@@ -1809,11 +1809,7 @@ static void read_superblock(int fd)
+ 		sbd.sd_diptrs = (sbd.bsize - sizeof(struct gfs_dinode)) /
+ 			sizeof(uint64_t);
+ 		sbd.md.riinode = inode_read(&sbd, sbd1->sb_rindex_di.no_addr);
+-		sbd.fssize = sbd.device.length;
+-		gfs1_rindex_read(&sbd, 0, &count);
+ 	} else {
+-		int sane;
+-
+ 		sbd.sd_inptrs = (sbd.bsize - sizeof(struct gfs2_meta_header)) /
+ 			sizeof(uint64_t);
+ 		sbd.sd_diptrs = (sbd.bsize - sizeof(struct gfs2_dinode)) /
+@@ -1821,11 +1817,10 @@ static void read_superblock(int fd)
+ 		sbd.master_dir = inode_read(&sbd,
+ 					    sbd.sd_sb.sb_master_dir.no_addr);
+ 		gfs2_lookupi(sbd.master_dir, "rindex", 6, &sbd.md.riinode);
+-		sbd.fssize = sbd.device.length;
+-		if (sbd.md.riinode) /* If we found the rindex */
+-			rindex_read(&sbd, 0, &count, &sane);
+ 	}
+-
++	sbd.fssize = sbd.device.length;
++	if (sbd.md.riinode) /* If we found the rindex */
++		rindex_read(&sbd, 0, &count, &sane);
+ }
+ 
+ /* ------------------------------------------------------------------------ */
+diff --git a/gfs2/libgfs2/gfs1.c b/gfs2/libgfs2/gfs1.c
+index 2ace124..076f4d0 100644
+--- a/gfs2/libgfs2/gfs1.c
++++ b/gfs2/libgfs2/gfs1.c
+@@ -160,65 +160,6 @@ void gfs1_block_map(struct gfs2_inode *ip, uint64_t lblock, int *new,
+ }
+ 
+ /**
+- * gfs1_rindex_read - read in the rg index file
+- *                  Stolen from libgfs2/super.c, but modified to handle gfs1.
+- * @sdp: the incore superblock pointer
+- * fd: optional file handle for rindex file (if meta_fs file system is mounted)
+- *     (if fd is <= zero, it will read from raw device)
+- * @count1: return count of the rgs.
+- *
+- * Returns: 0 on success, -1 on failure
+- */
+-int gfs1_rindex_read(struct gfs2_sbd *sdp, int fd, int *count1)
+-{
+-	unsigned int rg;
+-	int error;
+-	struct gfs2_rindex buf;
+-	struct rgrp_list *rgd, *prev_rgd;
+-	uint64_t prev_length = 0;
+-
+-	*count1 = 0;
+-	prev_rgd = NULL;
+-	for (rg = 0; ; rg++) {
+-		if (fd > 0)
+-			error = read(fd, &buf, sizeof(struct gfs2_rindex));
+-		else
+-			error = gfs2_readi(sdp->md.riinode, (char *)&buf,
+-					   (rg * sizeof(struct gfs2_rindex)),
+-					   sizeof(struct gfs2_rindex));
+-		if (!error)
+-			break;
+-		if (error != sizeof(struct gfs2_rindex))
+-			return -1;
+-
+-		rgd = (struct rgrp_list *)malloc(sizeof(struct rgrp_list));
+-		if (!rgd) {
+-			log_crit("Cannot allocate memory for rindex.\n");
+-			exit(-1);
+-		}
+-		memset(rgd, 0, sizeof(struct rgrp_list));
+-		osi_list_add_prev(&rgd->list, &sdp->rglist);
+-
+-		gfs2_rindex_in(&rgd->ri, (char *)&buf);
+-
+-		rgd->start = rgd->ri.ri_addr;
+-		if (prev_rgd) {
+-			prev_length = rgd->start - prev_rgd->start;
+-			prev_rgd->length = prev_length;
+-		}
+-
+-		if(gfs2_compute_bitstructs(sdp, rgd))
+-			return -1;
+-
+-		(*count1)++;
+-		prev_rgd = rgd;
+-	}
+-	if (prev_rgd)
+-		prev_rgd->length = prev_length;
+-	return 0;
+-}
+-
+-/**
+  * gfs1_ri_update - attach rgrps to the super block
+  *                  Stolen from libgfs2/super.c, but modified to handle gfs1.
+  * @sdp:
+@@ -236,8 +177,9 @@ int gfs1_ri_update(struct gfs2_sbd *sdp, int fd, int *rgcount, int quiet)
+ 	int count1 = 0, count2 = 0;
+ 	uint64_t errblock = 0;
+ 	uint64_t rmax = 0;
++	int sane;
+ 
+-	if (gfs1_rindex_read(sdp, fd, &count1))
++	if (rindex_read(sdp, fd, &count1, &sane))
+ 	    goto fail;
+ 	for (tmp = sdp->rglist.next; tmp != &sdp->rglist; tmp = tmp->next) {
+ 		rgd = osi_list_entry(tmp, struct rgrp_list, list);

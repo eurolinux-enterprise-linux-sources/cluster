@@ -1,0 +1,32 @@
+commit 97389a0558db6d316c766dcb4cbadeae7fee3688
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Mon Mar 11 07:06:36 2013 -0700
+
+    fsck.gfs2: Add clarifying message to duplicate processing
+    
+    This patch adds a message to the fsck output that indicates which
+    block reference is acceptable. That helps to determine if fsck made
+    the right decision when a duplicate is resolved.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/pass1b.c b/gfs2/fsck/pass1b.c
+index 1cc2473..05f270e 100644
+--- a/gfs2/fsck/pass1b.c
++++ b/gfs2/fsck/pass1b.c
+@@ -481,6 +481,15 @@ static int resolve_dup_references(struct gfs2_sbd *sdp, struct duptree *b,
+ 			q = block_type(id->block_no);
+ 			if (q != gfs2_inode_invalid) {
+ 				found_good_ref = 1;
++				log_warn( _("Inode %s (%lld/0x%llx)'s "
++					    "reference to block %llu (0x%llx) "
++					    "as '%s' is acceptable.\n"),
++					  id->name,
++					  (unsigned long long)id->block_no,
++					  (unsigned long long)id->block_no,
++					  (unsigned long long)b->block,
++					  (unsigned long long)b->block,
++					  reftypes[this_ref]);
+ 				continue; /* don't delete the dinode */
+ 			}
+ 		}

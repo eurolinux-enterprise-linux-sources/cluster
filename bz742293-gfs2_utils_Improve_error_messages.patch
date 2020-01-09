@@ -1,0 +1,55 @@
+commit 00af883f58ab5eb58f6dfcbe5e4d71a469c2a74e
+Author: Andrew Price <anprice@redhat.com>
+Date:   Fri Feb 17 15:15:28 2012 +0000
+
+    gfs2_utils: Improve error messages
+    
+    Currently gfs2_edit complains that it doesn't know what 'master' means
+    when it can't find the master directory. This patch catches the case
+    where the master directory hasn't been found and reports the error more
+    clearly to the user. It also updates a terse 'out of space' error
+    message in blk_alloc_i to be more clear.
+    
+    rhbz#742293
+    
+    Signed-off-by: Andrew Price <anprice@redhat.com>
+
+diff --git a/gfs2/edit/hexedit.c b/gfs2/edit/hexedit.c
+index a36f9a3..aec0944 100644
+--- a/gfs2/edit/hexedit.c
++++ b/gfs2/edit/hexedit.c
+@@ -2159,10 +2159,14 @@ uint64_t check_keywords(const char *kword)
+ 	else if (!strcmp(kword, "root") || !strcmp(kword, "rootdir"))
+ 		blk = sbd.sd_sb.sb_root_dir.no_addr;
+ 	else if (!strcmp(kword, "master")) {
+-		if (!sbd.gfs1)
+-			blk = sbd.sd_sb.sb_master_dir.no_addr;
+-		else
++		if (sbd.gfs1)
+ 			fprintf(stderr, "This is GFS1; there's no master directory.\n");
++		else if (!sbd.sd_sb.sb_master_dir.no_addr) {
++			fprintf(stderr, "GFS2 master directory not found on %s\n",
++			                                          sbd.device_name);
++			exit(-1);
++		} else
++			blk = sbd.sd_sb.sb_master_dir.no_addr;
+ 	}
+ 	else if (!strcmp(kword, "jindex")) {
+ 		if (sbd.gfs1)
+diff --git a/gfs2/libgfs2/fs_ops.c b/gfs2/libgfs2/fs_ops.c
+index 330cedd..1164a8c 100644
+--- a/gfs2/libgfs2/fs_ops.c
++++ b/gfs2/libgfs2/fs_ops.c
+@@ -130,8 +130,10 @@ static uint64_t blk_alloc_i(struct gfs2_sbd *sdp, unsigned int type)
+ 			break;
+ 	}
+ 
+-	if (n == NULL)
+-		die("out of space\n");
++	if (n == NULL) {
++		fprintf(stderr, "Not enough space available on device\n");
++		exit(1);
++	}
+ 
+ 	ri = &rl->ri;
+ 	rg = &rl->rg;

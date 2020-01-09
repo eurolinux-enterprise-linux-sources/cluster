@@ -1,0 +1,25 @@
+commit e648de42ea46cccc0257e0bc5cb13cbeecf45a5f
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Fri Jan 6 14:11:11 2012 -0600
+
+    fsck.gfs2: Increment link count reporting wrong dinode
+    
+    The output from fsck.gfs2 was wrong when it reported about a
+    link count change for lost+found.  This patch fixes the message
+    so it reports the correct dinode block number.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/lost_n_found.c b/gfs2/fsck/lost_n_found.c
+index af4189f..c028f8d 100644
+--- a/gfs2/fsck/lost_n_found.c
++++ b/gfs2/fsck/lost_n_found.c
+@@ -268,7 +268,7 @@ int add_inode_to_lf(struct gfs2_inode *ip){
+ 	/* If it's a directory, lost+found is back-linked to it via .. */
+ 	if (is_dir(&ip->i_di, sdp->gfs1))
+ 		incr_link_count(lf_dip->i_di.di_num.no_addr,
+-				ip->i_di.di_mode, _("to lost+found"));
++				ip->i_di.di_num.no_addr, _("to lost+found"));
+ 
+ 	log_notice( _("Added inode #%llu (0x%llx) to lost+found\n"),
+ 		    (unsigned long long)ip->i_di.di_num.no_addr,

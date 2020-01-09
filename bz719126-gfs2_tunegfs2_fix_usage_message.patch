@@ -1,0 +1,32 @@
+commit a16005a0369c4ce49d70eae47431987a6dd864bc
+Author: Andrew Price <anprice@redhat.com>
+Date:   Thu Jul 14 13:11:37 2011 +0100
+
+    tunegfs2: Fix usage message
+    
+    This is based on upstream commit a830c8747cf7dcc899dc92ad13c3a3b1a3738092
+    
+    The help message is updated to include all supported options.
+    
+    rhbz#719126
+    
+    Signed-off-by: Steven Whitehouse <swhiteho@redhat.com>
+    Signed-off-by: Andrew Price <anprice@redhat.com>
+    Reported-by: Nathan Straz <nstraz@redhat.com>
+    Reviewed-by: Bob Peterson <rpeterso@redhat.com>
+
+diff --git a/gfs2/tune/main.c b/gfs2/tune/main.c
+index be542d7..6a0daff 100644
+--- a/gfs2/tune/main.c
++++ b/gfs2/tune/main.c
+@@ -52,8 +52,8 @@ void parse_mount_options(char *arg)
+ 
+ static void usage(char *name)
+ {
+-	printf("Usage: %s -L <volume label> -U <UUID> -l -o "
+-		"<mount options> <device> \n", basename(name));
++	printf("Usage: %s [-hlV] [-L <volume_label>] [-U <UUID>]\n\t"
++		"[-o <mount_options>] <device> \n", basename(name));
+ }
+ 
+ static void version(void)

@@ -1,0 +1,69 @@
+commit 0bb789dbabb6ada3d29dd476c520428d8c116c42
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Tue Aug 9 15:51:34 2011 -0500
+
+    fsck.gfs2: don't free prev rgrp list repairing rgrps
+    
+    In cases where fsck.gfs2 is trying to repair damaged resource groups or
+    rindex, it tries several levels of repair.  Some of those levels build a
+    list of expected resource groups and check them against the actual ones,
+    and the previous list is freed before the next level is attempted.
+    However, in the case of minor damage, such as one bitmap block that was
+    overwritten, we can often repair the damage by reading in the resource
+    groups at the first level, then at the second level of repair (called
+    "ye_of_little_faith") use those values to compare against.  This patch
+    allows the second level of repair to use the first level's list.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/rgrepair.c b/gfs2/fsck/rgrepair.c
+index 52cc529..c01aaa6 100644
+--- a/gfs2/fsck/rgrepair.c
++++ b/gfs2/fsck/rgrepair.c
+@@ -780,12 +780,12 @@ int rg_repair(struct gfs2_sbd *sdp, int trust_lvl, int *rg_count, int *sane)
+ 	osi_list_t *exp, *act; /* expected, actual */
+ 	struct gfs2_rindex buf;
+ 
+-	/* Free previous incarnations in memory, if any. */
+-	gfs2_rgrp_free(&sdp->rglist);
+-
+ 	if (trust_lvl == blind_faith)
+ 		return 0;
+-	else if (trust_lvl == ye_of_little_faith) { /* if rindex seems sane */
++	if (trust_lvl == ye_of_little_faith) { /* if rindex seems sane */
++		/* Don't free previous incarnations in memory, if any.
++		 * We need them to copy in the next function:
++		 * gfs2_rgrp_free(&sdp->rglist); */
+ 		if (!(*sane)) {
+ 			log_err(_("The rindex file does not meet our "
+ 				  "expectations.\n"));
+@@ -798,6 +798,9 @@ int rg_repair(struct gfs2_sbd *sdp, int trust_lvl, int *rg_count, int *sane)
+ 			return error;
+ 		}
+ 	} else if (trust_lvl == open_minded) { /* If we can't trust RG index */
++		/* Free previous incarnations in memory, if any. */
++		gfs2_rgrp_free(&sdp->rglist);
++
+ 		/* Calculate our own RG index for comparison */
+ 		error = gfs2_rindex_calculate(sdp, &expected_rglist,
+ 					      &calc_rg_count);
+@@ -807,6 +810,9 @@ int rg_repair(struct gfs2_sbd *sdp, int trust_lvl, int *rg_count, int *sane)
+ 		}
+ 	}
+ 	else if (trust_lvl == distrust) { /* If we can't trust RG index */
++		/* Free previous incarnations in memory, if any. */
++		gfs2_rgrp_free(&sdp->rglist);
++
+ 		error = gfs2_rindex_rebuild(sdp, &expected_rglist,
+ 					    &calc_rg_count, 0);
+ 		if (error) {
+@@ -817,6 +823,9 @@ int rg_repair(struct gfs2_sbd *sdp, int trust_lvl, int *rg_count, int *sane)
+ 		sdp->rgrps = calc_rg_count;
+ 	}
+ 	else if (trust_lvl == indignation) { /* If we can't trust anything */
++		/* Free previous incarnations in memory, if any. */
++		gfs2_rgrp_free(&sdp->rglist);
++
+ 		error = gfs2_rindex_rebuild(sdp, &expected_rglist,
+ 					    &calc_rg_count, 1);
+ 		if (error) {

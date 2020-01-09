@@ -1,0 +1,24 @@
+commit f5da0eb475b287a1bc4227b54c87083878490c72
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Mon Aug 8 14:47:49 2011 -0500
+
+    dirent_repair needs to mark the buffer as modified
+    
+    This patch adds a call to bmodified to function dirent_repair.  Without
+    setting the modified bit, directory repairs may be forgotten and never
+    written back to disk, leaving the damage in place.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index 888acec..94de22a 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -264,6 +264,7 @@ static int dirent_repair(struct gfs2_inode *ip, struct gfs2_buffer_head *bh,
+ 		de->de_rec_len = GFS2_DIRENT_SIZE(de->de_name_len);
+ 	}
+ 	gfs2_dirent_out(de, (char *)dent);
++	bmodified(bh);
+ 	return 0;
+ }
+ 

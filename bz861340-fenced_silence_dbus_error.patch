@@ -1,0 +1,26 @@
+commit de7ae8fdcd3b46a23affbbe397f3e14462e0c905
+Author: David Teigland <teigland@redhat.com>
+Date:   Fri Oct 5 10:19:35 2012 -0500
+
+    fenced: silence dbus error
+    
+    Don't log unimportant error that
+    worries people.
+    
+    bz 861340
+    
+    Signed-off-by: David Teigland <teigland@redhat.com>
+
+diff --git a/fence/fenced/dbus.c b/fence/fenced/dbus.c
+index 5d1e1d5..9d7be2f 100644
+--- a/fence/fenced/dbus.c
++++ b/fence/fenced/dbus.c
+@@ -13,7 +13,7 @@ static DBusConnection *bus = NULL;
+ void fd_dbus_init(void)
+ {
+     if (!(bus = dbus_bus_get_private(DBUS_BUS_SYSTEM, NULL))) {
+-	    log_error("failed to get dbus connection");
++	    log_debug("failed to get dbus connection");
+     } else {
+ 	    log_debug("connected to dbus %s", dbus_bus_get_unique_name(bus));
+     }

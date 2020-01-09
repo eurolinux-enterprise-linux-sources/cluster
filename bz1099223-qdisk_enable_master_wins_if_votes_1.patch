@@ -1,0 +1,15 @@
+--- cluster-3.0.12.1/cman/qdisk/main.c.old	2014-05-19 14:37:44.443978466 -0400
++++ cluster-3.0.12.1/cman/qdisk/main.c	2014-05-19 14:48:35.615188311 -0400
+@@ -1946,9 +1946,9 @@ get_config_data(qd_ctx *ctx, struct h_da
+ 			ctx->qc_flags &= ~RF_MASTER_WINS;
+ 		}
+ 	} else {
+-		if (ctx->qc_flags & RF_AUTO_VOTES &&
+-		    !*cfh &&
+-		    ctx->qc_auto_votes == 1) { 
++		if (!*cfh && 
++		    ((ctx->qc_flags & RF_AUTO_VOTES && ctx->qc_auto_votes == 1) ||
++		    (!(ctx->qc_flags & RF_AUTO_VOTES) && ctx->qc_votes == 1))) { 
+ 			/* Two node cluster, no heuristics, 1 vote for
+ 			 * quorum disk daemon.  Safe to enable master-wins.
+ 			 * In fact, qdiskd without master-wins in this config

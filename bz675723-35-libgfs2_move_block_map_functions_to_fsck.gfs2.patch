@@ -1,0 +1,383 @@
+commit 4591e128cb00343274b3edc2744d03372816243e
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Wed Aug 10 13:12:54 2011 -0500
+
+    libgfs2: move block_map functions to fsck.gfs2
+    
+    Since the "blockmap" functions were only used in fsck.gfs2 they don't
+    have a place in libgfs2.  This patch moves them to fsck.gfs2.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/metawalk.h b/gfs2/fsck/metawalk.h
+index 719bbd9..e114427 100644
+--- a/gfs2/fsck/metawalk.h
++++ b/gfs2/fsck/metawalk.h
+@@ -4,6 +4,8 @@
+ #define DIR_LINEAR 1
+ #define DIR_EXHASH 2
+ 
++#include "util.h"
++
+ struct metawalk_fxns;
+ 
+ extern int check_inode_eattr(struct gfs2_inode *ip,
+diff --git a/gfs2/fsck/util.c b/gfs2/fsck/util.c
+index 569f25a..4075aec 100644
+--- a/gfs2/fsck/util.c
++++ b/gfs2/fsck/util.c
+@@ -380,3 +380,75 @@ void dirtree_delete(struct dir_info *b)
+ 	osi_erase(&b->node, &dirtree);
+ 	free(b);
+ }
++
++static int gfs2_blockmap_create(struct gfs2_bmap *bmap, uint64_t size)
++{
++	bmap->size = size;
++
++	/* Have to add 1 to BLOCKMAP_SIZE since it's 0-based and mallocs
++	 * must be 1-based */
++	bmap->mapsize = BLOCKMAP_SIZE4(size);
++
++	if (!(bmap->map = malloc(sizeof(char) * bmap->mapsize)))
++		return -ENOMEM;
++	if (!memset(bmap->map, 0, sizeof(char) * bmap->mapsize)) {
++		free(bmap->map);
++		bmap->map = NULL;
++		return -ENOMEM;
++	}
++	return 0;
++}
++
++static void gfs2_blockmap_destroy(struct gfs2_bmap *bmap)
++{
++	if (bmap->map)
++		free(bmap->map);
++	bmap->size = 0;
++	bmap->mapsize = 0;
++}
++
++struct gfs2_bmap *gfs2_bmap_create(struct gfs2_sbd *sdp, uint64_t size,
++				   uint64_t *addl_mem_needed)
++{
++	struct gfs2_bmap *il;
++
++	*addl_mem_needed = 0L;
++	il = malloc(sizeof(*il));
++	if (!il || !memset(il, 0, sizeof(*il)))
++		return NULL;
++
++	if (gfs2_blockmap_create(il, size)) {
++		*addl_mem_needed = il->mapsize;
++		free(il);
++		il = NULL;
++	}
++	osi_list_init(&sdp->eattr_blocks.list);
++	return il;
++}
++
++int gfs2_blockmap_set(struct gfs2_bmap *bmap, uint64_t bblock,
++		      enum gfs2_mark_block mark)
++{
++	static unsigned char *byte;
++	static uint64_t b;
++
++	if (bblock > bmap->size)
++		return -1;
++
++	byte = bmap->map + BLOCKMAP_SIZE4(bblock);
++	b = BLOCKMAP_BYTE_OFFSET4(bblock);
++	*byte &= ~(BLOCKMAP_MASK4 << b);
++	*byte |= (mark & BLOCKMAP_MASK4) << b;
++	return 0;
++}
++
++void *gfs2_bmap_destroy(struct gfs2_sbd *sdp, struct gfs2_bmap *il)
++{
++	if (il) {
++		gfs2_blockmap_destroy(il);
++		free(il);
++		il = NULL;
++	}
++	gfs2_special_free(&sdp->eattr_blocks);
++	return il;
++}
+diff --git a/gfs2/fsck/util.h b/gfs2/fsck/util.h
+index 56b83fe..b26c123 100644
+--- a/gfs2/fsck/util.h
++++ b/gfs2/fsck/util.h
+@@ -33,4 +33,88 @@ static inline uint8_t block_type(uint64_t bblock)
+ 	return btype;
+ }
+ 
++/* blockmap declarations and functions */
++enum gfs2_mark_block {
++	gfs2_block_free    = (0x0),
++	gfs2_block_used    = (0x1),
++	gfs2_indir_blk     = (0x2),
++	gfs2_inode_dir     = (0x3),
++	gfs2_inode_file    = (0x4),
++
++	gfs2_inode_lnk     = (0x5),
++	gfs2_inode_blk     = (0x6),
++	gfs2_inode_chr     = (0x7),
++	gfs2_inode_fifo    = (0x8),
++	gfs2_inode_sock    = (0x9),
++
++	gfs2_inode_invalid = (0xa),
++	gfs2_meta_inval    = (0xb),
++	gfs2_leaf_blk      = (0xc),
++	gfs2_meta_rgrp     = (0xd),
++	gfs2_meta_eattr    = (0xe),
++
++	gfs2_bad_block     = (0xf), /* Contains at least one bad block */
++};
++
++static const inline char *block_type_string(uint8_t q)
++{
++	const char *blktyp[] = {
++		"free",
++		"data",
++		"indirect data",
++		"directory",
++		"file",
++
++		"symlink",
++		"block device",
++		"char device",
++		"fifo",
++		"socket",
++
++		"invalid inode",
++		"invalid meta",
++		"dir leaf",
++		"rgrp meta",
++		"eattribute",
++
++		"bad"};
++	if (q < 16)
++		return (blktyp[q]);
++	return blktyp[15];
++}
++
++/* Must be kept in sync with gfs2_mark_block enum above. Blocks marked as
++   invalid or bad are considered metadata until actually freed. */
++static inline int blockmap_to_bitmap(enum gfs2_mark_block m)
++{
++	static int bitmap_states[16] = {
++		GFS2_BLKST_FREE,
++		GFS2_BLKST_USED,
++		GFS2_BLKST_USED,
++		GFS2_BLKST_DINODE,
++		GFS2_BLKST_DINODE,
++
++		GFS2_BLKST_DINODE,
++		GFS2_BLKST_DINODE,
++		GFS2_BLKST_DINODE,
++		GFS2_BLKST_DINODE,
++		GFS2_BLKST_DINODE,
++
++		GFS2_BLKST_FREE,
++		GFS2_BLKST_FREE,
++		GFS2_BLKST_USED,
++		GFS2_BLKST_USED,
++		GFS2_BLKST_USED,
++
++		GFS2_BLKST_USED
++	};
++	return bitmap_states[m];
++}
++
++extern struct gfs2_bmap *gfs2_bmap_create(struct gfs2_sbd *sdp, uint64_t size,
++					  uint64_t *addl_mem_needed);
++extern void *gfs2_bmap_destroy(struct gfs2_sbd *sdp, struct gfs2_bmap *il);
++extern int gfs2_blockmap_set(struct gfs2_bmap *il, uint64_t block,
++			     enum gfs2_mark_block mark);
++
+ #endif /* __UTIL_H__ */
+diff --git a/gfs2/libgfs2/block_list.c b/gfs2/libgfs2/block_list.c
+index faedc54..65003b0 100644
+--- a/gfs2/libgfs2/block_list.c
++++ b/gfs2/libgfs2/block_list.c
+@@ -8,51 +8,6 @@
+ 
+ #include "libgfs2.h"
+ 
+-static int gfs2_blockmap_create(struct gfs2_bmap *bmap, uint64_t size)
+-{
+-	bmap->size = size;
+-
+-	/* Have to add 1 to BLOCKMAP_SIZE since it's 0-based and mallocs
+-	 * must be 1-based */
+-	bmap->mapsize = BLOCKMAP_SIZE4(size);
+-
+-	if(!(bmap->map = malloc(sizeof(char) * bmap->mapsize)))
+-		return -ENOMEM;
+-	if(!memset(bmap->map, 0, sizeof(char) * bmap->mapsize)) {
+-		free(bmap->map);
+-		bmap->map = NULL;
+-		return -ENOMEM;
+-	}
+-	return 0;
+-}
+-
+-static void gfs2_blockmap_destroy(struct gfs2_bmap *bmap)
+-{
+-	if(bmap->map)
+-		free(bmap->map);
+-	bmap->size = 0;
+-	bmap->mapsize = 0;
+-}
+-
+-struct gfs2_bmap *gfs2_bmap_create(struct gfs2_sbd *sdp, uint64_t size,
+-				   uint64_t *addl_mem_needed)
+-{
+-	struct gfs2_bmap *il;
+-
+-	*addl_mem_needed = 0L;
+-	il = malloc(sizeof(*il));
+-	if (!il || !memset(il, 0, sizeof(*il)))
+-		return NULL;
+-
+-	if(gfs2_blockmap_create(il, size)) {
+-		*addl_mem_needed = il->mapsize;
+-		free(il);
+-		il = NULL;
+-	}
+-	osi_list_init(&sdp->eattr_blocks.list);
+-	return il;
+-}
+-
+ void gfs2_special_free(struct special_blocks *blist)
+ {
+ 	struct special_blocks *f;
+@@ -108,30 +63,3 @@ void gfs2_special_clear(struct special_blocks *blocklist, uint64_t block)
+ 		free(b);
+ 	}
+ }
+-
+-int gfs2_blockmap_set(struct gfs2_bmap *bmap, uint64_t bblock,
+-		      enum gfs2_mark_block mark)
+-{
+-	static unsigned char *byte;
+-	static uint64_t b;
+-
+-	if(bblock > bmap->size)
+-		return -1;
+-
+-	byte = bmap->map + BLOCKMAP_SIZE4(bblock);
+-	b = BLOCKMAP_BYTE_OFFSET4(bblock);
+-	*byte &= ~(BLOCKMAP_MASK4 << b);
+-	*byte |= (mark & BLOCKMAP_MASK4) << b;
+-	return 0;
+-}
+-
+-void *gfs2_bmap_destroy(struct gfs2_sbd *sdp, struct gfs2_bmap *il)
+-{
+-	if(il) {
+-		gfs2_blockmap_destroy(il);
+-		free(il);
+-		il = NULL;
+-	}
+-	gfs2_special_free(&sdp->eattr_blocks);
+-	return il;
+-}
+diff --git a/gfs2/libgfs2/libgfs2.h b/gfs2/libgfs2/libgfs2.h
+index cc71bd3..a2e1523 100644
+--- a/gfs2/libgfs2/libgfs2.h
++++ b/gfs2/libgfs2/libgfs2.h
+@@ -273,94 +273,12 @@ struct gfs2_bmap {
+ 
+ /* block_list.c */
+ 
+-enum gfs2_mark_block {
+-	gfs2_block_free    = (0x0),
+-	gfs2_block_used    = (0x1),
+-	gfs2_indir_blk     = (0x2),
+-	gfs2_inode_dir     = (0x3),
+-	gfs2_inode_file    = (0x4),
+-
+-	gfs2_inode_lnk     = (0x5),
+-	gfs2_inode_blk     = (0x6),
+-	gfs2_inode_chr     = (0x7),
+-	gfs2_inode_fifo    = (0x8),
+-	gfs2_inode_sock    = (0x9),
+-
+-	gfs2_inode_invalid = (0xa),
+-	gfs2_meta_inval    = (0xb),
+-	gfs2_leaf_blk      = (0xc),
+-	gfs2_meta_rgrp     = (0xd),
+-	gfs2_meta_eattr    = (0xe),
+-
+-	gfs2_bad_block     = (0xf), /* Contains at least one bad block */
+-};
+-
+-static const inline char *block_type_string(uint8_t q)
+-{
+-	const char *blktyp[] = {
+-		"free",
+-		"data",
+-		"indirect data",
+-		"directory",
+-		"file",
+-
+-		"symlink",
+-		"block device",
+-		"char device",
+-		"fifo",
+-		"socket",
+-
+-		"invalid inode",
+-		"invalid meta",
+-		"dir leaf",
+-		"rgrp meta",
+-		"eattribute",
+-
+-		"bad"};
+-	if (q < 16)
+-		return (blktyp[q]);
+-	return blktyp[15];
+-}
+-
+-/* Must be kept in sync with gfs2_mark_block enum above. Blocks marked as
+-   invalid or bad are considered metadata until actually freed. */
+-static inline int blockmap_to_bitmap(enum gfs2_mark_block m)
+-{
+-	static int bitmap_states[16] = {
+-		GFS2_BLKST_FREE,
+-		GFS2_BLKST_USED,
+-		GFS2_BLKST_USED,
+-		GFS2_BLKST_DINODE,
+-		GFS2_BLKST_DINODE,
+-
+-		GFS2_BLKST_DINODE,
+-		GFS2_BLKST_DINODE,
+-		GFS2_BLKST_DINODE,
+-		GFS2_BLKST_DINODE,
+-		GFS2_BLKST_DINODE,
+-
+-		GFS2_BLKST_FREE,
+-		GFS2_BLKST_FREE,
+-		GFS2_BLKST_USED,
+-		GFS2_BLKST_USED,
+-		GFS2_BLKST_USED,
+-
+-		GFS2_BLKST_USED
+-	};
+-	return bitmap_states[m];
+-}
+-
+-extern struct gfs2_bmap *gfs2_bmap_create(struct gfs2_sbd *sdp, uint64_t size,
+-					  uint64_t *addl_mem_needed);
+ extern struct special_blocks *blockfind(struct special_blocks *blist, uint64_t num);
+ extern void gfs2_special_add(struct special_blocks *blocklist, uint64_t block);
+ extern void gfs2_special_set(struct special_blocks *blocklist, uint64_t block);
+ extern void gfs2_special_free(struct special_blocks *blist);
+-extern int gfs2_blockmap_set(struct gfs2_bmap *il, uint64_t block,
+-			     enum gfs2_mark_block mark);
+ extern void gfs2_special_clear(struct special_blocks *blocklist,
+ 			       uint64_t block);
+-extern void *gfs2_bmap_destroy(struct gfs2_sbd *sdp, struct gfs2_bmap *il);
+ 
+ /* buf.c */
+ extern struct gfs2_buffer_head *__bget_generic(struct gfs2_sbd *sdp,

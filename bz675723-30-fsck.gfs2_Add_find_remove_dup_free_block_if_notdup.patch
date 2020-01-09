@@ -1,0 +1,378 @@
+commit debfd10488695bc940bbb1cd88b2dc79e74064b3
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Tue Aug 9 15:29:35 2011 -0500
+
+    fsck.gfs2: Add find_remove_dup, free_block_if_notdup
+    
+    This patch adds a couple new functions to util.c: find_remove_dup
+    and free_block_if_notdup.  This is a centralized function that
+    is used to remove a duplicate reference.  Each reference needs to be
+    removed to determine when all duplicate references have been resolved.
+    The object is to get down to one reference, so we can set the proper
+    type based on the remaining reference.  However, if the very last
+    reference is deleted as well, the block may be freed.
+    These functions present one consistent way to do all this rather than
+    before when the it wasn't very consistent and various bitmap
+    inaccuracies were sometimes left in the file system.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index a5de1c8..b25b40d 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -823,6 +823,54 @@ int delete_block(struct gfs2_inode *ip, uint64_t block,
+ }
+ 
+ /**
++ * find_remove_dup - find out if this is a duplicate ref.  If so, remove it.
++ * Returns: 0 if not a duplicate reference, 1 if it is.
++ */
++int find_remove_dup(struct gfs2_inode *ip, uint64_t block, const char *btype)
++{
++	struct duptree *d;
++	struct inode_with_dups *id;
++
++	d = dupfind(block);
++	if (!d)
++		return 0;
++
++	/* remove the inode reference id structure for this reference. */
++	id = find_dup_ref_inode(d, ip);
++	if (!id)
++		return 0;
++
++	dup_listent_delete(id);
++	log_err( _("Removing duplicate status of block %llu (0x%llx) "
++		   "referenced as %s by dinode %llu (0x%llx)\n"),
++		 (unsigned long long)block, (unsigned long long)block,
++		 btype, (unsigned long long)ip->i_di.di_num.no_addr,
++		 (unsigned long long)ip->i_di.di_num.no_addr);
++	d->refs--; /* one less reference */
++	if (d->refs == 1) {
++		log_info( _("This leaves only one reference: it's "
++			    "no longer a duplicate.\n"));
++		dup_delete(d); /* not duplicate now */
++	} else
++		log_info( _("%d block reference(s) remain.\n"),
++			  d->refs);
++	return 1; /* but the original ref still exists so do not free it. */
++}
++
++/**
++ * free_block_if_notdup - free blocks associated with an inode, but if it's a
++ *                        duplicate, just remove that designation instead.
++ * Returns: 0 if the block was freed, 1 if a duplicate reference was removed
++ */
++int free_block_if_notdup(struct gfs2_inode *ip, uint64_t block,
++			 const char *btype)
++{
++	if (!find_remove_dup(ip, block, btype))
++		fsck_blockmap_set(ip, block, btype, gfs2_block_free);
++	return 0;
++}
++
++/**
+  * delete_block_if_notdup - delete blocks associated with an inode
+  *
+  * Ignore blocks that are already marked free.
+@@ -834,7 +882,6 @@ static int delete_block_if_notdup(struct gfs2_inode *ip, uint64_t block,
+ 				  const char *btype, void *private)
+ {
+ 	uint8_t q;
+-	struct duptree *d;
+ 
+ 	if (!valid_block(ip->i_sbd, block))
+ 		return -EFAULT;
+@@ -849,20 +896,7 @@ static int delete_block_if_notdup(struct gfs2_inode *ip, uint64_t block,
+ 			  (unsigned long long)ip->i_di.di_num.no_addr);
+ 		return 0;
+ 	}
+-	d = dupfind(block);
+-	if (d) {
+-		log_info( _("Removing duplicate reference %d "
+-			    "to block %lld (0x%llx).\n"), d->refs,
+-			  (unsigned long long)block,
+-			  (unsigned long long)block);
+-		d->refs--; /* one less reference */
+-		if (d->refs == 1) /* If down to the last reference */
+-			dup_delete(d); /* not duplicate now */
+-		return 1; /* but the original ref still exists
+-			     so return (do not free it). */
+-	}
+-	fsck_blockmap_set(ip, block, btype, gfs2_block_free);
+-	return 0;
++	return free_block_if_notdup(ip, block, btype);
+ }
+ 
+ /**
+diff --git a/gfs2/fsck/metawalk.h b/gfs2/fsck/metawalk.h
+index 7a8ae4c..719bbd9 100644
+--- a/gfs2/fsck/metawalk.h
++++ b/gfs2/fsck/metawalk.h
+@@ -35,6 +35,10 @@ extern void reprocess_inode(struct gfs2_inode *ip, const char *desc);
+ extern struct duptree *dupfind(uint64_t block);
+ extern struct gfs2_inode *fsck_system_inode(struct gfs2_sbd *sdp,
+ 					    uint64_t block);
++extern int find_remove_dup(struct gfs2_inode *ip, uint64_t block,
++			   const char *btype);
++extern int free_block_if_notdup(struct gfs2_inode *ip, uint64_t block,
++				const char *btype);
+ 
+ #define is_duplicate(dblock) ((dupfind(dblock)) ? 1 : 0)
+ 
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index f5ec37a..64220f0 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -438,7 +438,6 @@ static int undo_check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 			       struct gfs2_buffer_head **bh, int h,
+ 			       void *private)
+ {
+-	struct duptree *d;
+ 	int found_dup = 0, iblk_type;
+ 	struct gfs2_buffer_head *nbh;
+ 	struct block_count *bc = (struct block_count *)private;
+@@ -455,20 +454,7 @@ static int undo_check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 	else
+ 		iblk_type = GFS2_METATYPE_IN;
+ 
+-	d = dupfind(block);
+-	if (d) {
+-		log_err( _("Reversing duplicate status of block %llu (0x%llx) "
+-			   "referenced as metadata in indirect block for "
+-			   "dinode %llu (0x%llx)\n"),
+-			 (unsigned long long)block,
+-			 (unsigned long long)block,
+-			 (unsigned long long)ip->i_di.di_num.no_addr,
+-			 (unsigned long long)ip->i_di.di_num.no_addr);
+-		d->refs--; /* one less reference */
+-		if (d->refs == 1)
+-			dup_delete(d);
+-		found_dup = 1;
+-	}
++	found_dup = find_remove_dup(ip, block, _("Metadata"));
+ 	nbh = bread(ip->i_sbd, block);
+ 
+ 	if (gfs2_check_meta(nbh, iblk_type)) {
+@@ -548,7 +534,6 @@ static int check_data(struct gfs2_inode *ip, uint64_t block, void *private)
+ static int undo_check_data(struct gfs2_inode *ip, uint64_t block,
+ 			   void *private)
+ {
+-	struct duptree *d;
+ 	struct block_count *bc = (struct block_count *) private;
+ 
+ 	if (!valid_block(ip->i_sbd, block)) {
+@@ -560,23 +545,8 @@ static int undo_check_data(struct gfs2_inode *ip, uint64_t block,
+ 				  gfs2_block_free);
+ 		return 1;
+ 	}
+-	d = dupfind(block);
+-	if (d) {
+-		log_err( _("Reversing duplicate status of block %llu (0x%llx) "
+-			   "referenced as data by dinode %llu (0x%llx)\n"),
+-			 (unsigned long long)block,
+-			 (unsigned long long)block,
+-			 (unsigned long long)ip->i_di.di_num.no_addr,
+-			 (unsigned long long)ip->i_di.di_num.no_addr);
+-		d->refs--; /* one less reference */
+-		if (d->refs == 1)
+-			dup_delete(d);
+-		bc->data_count--;
+-		return 1;
+-	}
+-	fsck_blockmap_set(ip, block, _("data"), gfs2_block_free);
+ 	bc->data_count--;
+-	return 0;
++	return free_block_if_notdup(ip, block, _("data"));
+ }
+ 
+ static int remove_inode_eattr(struct gfs2_inode *ip, struct block_count *bc)
+diff --git a/gfs2/fsck/util.c b/gfs2/fsck/util.c
+index 9930624..569f25a 100644
+--- a/gfs2/fsck/util.c
++++ b/gfs2/fsck/util.c
+@@ -185,6 +185,30 @@ static struct duptree *gfs2_dup_set(uint64_t dblock, int create)
+ 	return data;
+ }
+ 
++/**
++ * find_dup_ref_inode - find a duplicate reference inode entry for an inode
++ */
++struct inode_with_dups *find_dup_ref_inode(struct duptree *dt,
++					   struct gfs2_inode *ip)
++{
++	osi_list_t *ref;
++	struct inode_with_dups *id;
++
++	osi_list_foreach(ref, &dt->ref_invinode_list) {
++		id = osi_list_entry(ref, struct inode_with_dups, list);
++
++		if (id->block_no == ip->i_di.di_num.no_addr)
++			return id;
++	}
++	osi_list_foreach(ref, &dt->ref_inode_list) {
++		id = osi_list_entry(ref, struct inode_with_dups, list);
++
++		if (id->block_no == ip->i_di.di_num.no_addr)
++			return id;
++	}
++	return NULL;
++}
++
+ /*
+  * add_duplicate_ref - Add a duplicate reference to the duplicates tree list
+  * A new element of the tree will be created as needed
+@@ -193,15 +217,19 @@ static struct duptree *gfs2_dup_set(uint64_t dblock, int create)
+  * So we need to recreate the duplicate reference structure if it's not there.
+  * Later, in pass1b, it has to go back through the file system
+  * and figure out those original references in order to resolve them.
++ *
++ * first - if 1, we're being called from pass1b, in which case we're trying
++ *         to find the first reference to this block.  If 0, we're being
++ *         called from pass1, which is the second reference, which determined
++ *         it was a duplicate..
+  */
+ int add_duplicate_ref(struct gfs2_inode *ip, uint64_t block,
+ 		      enum dup_ref_type reftype, int first, int inode_valid)
+ {
+-	osi_list_t *ref;
+-	struct inode_with_dups *id, *found_id;
++	struct inode_with_dups *id;
+ 	struct duptree *dt;
+ 
+-	if (!valid_block(ip->i_sbd, block) != 0)
++	if (!valid_block(ip->i_sbd, block))
+ 		return 0;
+ 	/* If this is not the first reference (i.e. all calls from pass1) we
+ 	   need to create the duplicate reference. If this is pass1b, we want
+@@ -221,65 +249,42 @@ int add_duplicate_ref(struct gfs2_inode *ip, uint64_t block,
+ 	   reference, we don't want to increment the reference count because
+ 	   it's already accounted for. */
+ 	if (first) {
+-		if (!dt->first_ref_found) {
+-			dt->first_ref_found = 1;
+-			dups_found_first++; /* We found another first ref. */
+-		}
++		dt->first_ref_found = 1;
++		dups_found_first++; /* We found another first ref. */
+ 	} else {
+ 		dt->refs++;
+ 	}
+ 
+-	/* Check for a previous reference to this duplicate on the "invalid
+-	   inode" reference list. */
+-	found_id = NULL;
+-	osi_list_foreach(ref, &dt->ref_invinode_list) {
+-		id = osi_list_entry(ref, struct inode_with_dups, list);
+-
+-		if (id->block_no == ip->i_di.di_num.no_addr) {
+-			found_id = id;
+-			break;
+-		}
+-	}
+-	if (found_id == NULL) {
+-		osi_list_foreach(ref, &dt->ref_inode_list) {
+-			id = osi_list_entry(ref, struct inode_with_dups, list);
+-
+-			if (id->block_no == ip->i_di.di_num.no_addr) {
+-				found_id = id;
+-				break;
+-			}
+-		}
+-	}
+-	if (found_id == NULL) {
++	/* Check for a previous reference to this duplicate */
++	id = find_dup_ref_inode(dt, ip);
++	if (id == NULL) {
+ 		/* Check for the inode on the invalid inode reference list. */
+ 		uint8_t q;
+ 
+-		if (!(found_id = malloc(sizeof(*found_id)))) {
++		if (!(id = malloc(sizeof(*id)))) {
+ 			log_crit( _("Unable to allocate "
+ 				    "inode_with_dups structure\n"));
+ 			return -1;
+ 		}
+-		if (!(memset(found_id, 0, sizeof(*found_id)))) {
++		if (!(memset(id, 0, sizeof(*id)))) {
+ 			log_crit( _("Unable to zero inode_with_dups "
+ 				    "structure\n"));
+ 			return -1;
+ 		}
+-		found_id->block_no = ip->i_di.di_num.no_addr;
++		id->block_no = ip->i_di.di_num.no_addr;
+ 		q = block_type(ip->i_di.di_num.no_addr);
+ 		/* If it's an invalid dinode, put it first on the invalid
+ 		   inode reference list otherwise put it on the normal list. */
+ 		if (!inode_valid || q == gfs2_inode_invalid)
+-			osi_list_add_prev(&found_id->list,
+-					  &dt->ref_invinode_list);
++			osi_list_add_prev(&id->list, &dt->ref_invinode_list);
+ 		else
+-			osi_list_add_prev(&found_id->list,
+-					  &dt->ref_inode_list);
++			osi_list_add_prev(&id->list, &dt->ref_inode_list);
+ 	}
+-	found_id->reftypecount[reftype]++;
+-	found_id->dup_count++;
++	id->reftypecount[reftype]++;
++	id->dup_count++;
+ 	log_info( _("Found %d reference(s) to block %llu"
+ 		    " (0x%llx) as %s in inode #%llu (0x%llx)\n"),
+-		  found_id->dup_count, (unsigned long long)block,
++		  id->dup_count, (unsigned long long)block,
+ 		  (unsigned long long)block, reftypes[reftype],
+ 		  (unsigned long long)ip->i_di.di_num.no_addr,
+ 		  (unsigned long long)ip->i_di.di_num.no_addr);
+@@ -343,6 +348,14 @@ struct dir_info *dirtree_find(uint64_t block)
+ 	return NULL;
+ }
+ 
++void dup_listent_delete(struct inode_with_dups *id)
++{
++	if (id->name)
++		free(id->name);
++	osi_list_del(&id->list);
++	free(id);
++}
++
+ void dup_delete(struct duptree *b)
+ {
+ 	struct inode_with_dups *id;
+@@ -351,18 +364,12 @@ void dup_delete(struct duptree *b)
+ 	while (!osi_list_empty(&b->ref_invinode_list)) {
+ 		tmp = (&b->ref_invinode_list)->next;
+ 		id = osi_list_entry(tmp, struct inode_with_dups, list);
+-		if (id->name)
+-			free(id->name);
+-		osi_list_del(&id->list);
+-		free(id);
++		dup_listent_delete(id);
+ 	}
+ 	while (!osi_list_empty(&b->ref_inode_list)) {
+ 		tmp = (&b->ref_inode_list)->next;
+ 		id = osi_list_entry(tmp, struct inode_with_dups, list);
+-		if (id->name)
+-			free(id->name);
+-		osi_list_del(&id->list);
+-		free(id);
++		dup_listent_delete(id);
+ 	}
+ 	osi_erase(&b->node, &dup_blocks);
+ 	free(b);
+diff --git a/gfs2/fsck/util.h b/gfs2/fsck/util.h
+index d2c81db..56b83fe 100644
+--- a/gfs2/fsck/util.h
++++ b/gfs2/fsck/util.h
+@@ -15,6 +15,10 @@ void big_file_comfort(struct gfs2_inode *ip, uint64_t blks_checked);
+ void warm_fuzzy_stuff(uint64_t block);
+ int add_duplicate_ref(struct gfs2_inode *ip, uint64_t block,
+ 		      enum dup_ref_type reftype, int first, int inode_valid);
++extern struct inode_with_dups *find_dup_ref_inode(struct duptree *dt,
++						  struct gfs2_inode *ip);
++extern void dup_listent_delete(struct inode_with_dups *id);
++
+ extern const char *reftypes[3];
+ 
+ static inline uint8_t block_type(uint64_t bblock)

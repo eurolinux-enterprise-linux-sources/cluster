@@ -1,0 +1,189 @@
+commit 3c9226bbc66fde9e9703a4685ed46e6e17d9085a
+Author: David Teigland <teigland@redhat.com>
+Date:   Tue Sep 4 11:44:28 2012 -0500
+
+    fenced: fence_check delay
+    
+    Delay fencing if the fence_check script is busy checking
+    fencing, which might cause our fencing to fail.
+    Configure delay seconds, default 5, 0 to disable, as
+    <fence_daemon fence_check_delay="5"/>
+    after which fenced sends SIGTERM to fence_check pid and
+    continues with normal fencing.
+    
+    Resolves: rhbz#797952
+    
+    Signed-off-by: David Teigland <teigland@redhat.com>
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/fence/fenced/config.c b/fence/fenced/config.c
+index 0517c2a..66610ef 100644
+--- a/fence/fenced/config.c
++++ b/fence/fenced/config.c
+@@ -13,6 +13,7 @@ int optd_disable_dbus;
+ int optd_skip_undefined;
+ int optd_post_join_delay;
+ int optd_post_fail_delay;
++int optd_fence_check_delay;
+ int optd_override_time;
+ int optd_override_path;
+ 
+@@ -25,6 +26,7 @@ int cfgd_disable_dbus    = DEFAULT_DISABLE_DBUS;
+ int cfgd_skip_undefined  = DEFAULT_SKIP_UNDEFINED;
+ int cfgd_post_join_delay = DEFAULT_POST_JOIN_DELAY;
+ int cfgd_post_fail_delay = DEFAULT_POST_FAIL_DELAY;
++int cfgd_fence_check_delay = DEFAULT_FENCE_CHECK_DELAY;
+ int cfgd_override_time   = DEFAULT_OVERRIDE_TIME;
+ const char *cfgd_override_path = DEFAULT_OVERRIDE_PATH;
+ 
+@@ -89,6 +91,7 @@ void read_ccs_int(const char *path, int *config_val)
+ #define CLEAN_START_PATH "/cluster/fence_daemon/@clean_start"
+ #define POST_JOIN_DELAY_PATH "/cluster/fence_daemon/@post_join_delay"
+ #define POST_FAIL_DELAY_PATH "/cluster/fence_daemon/@post_fail_delay"
++#define FENCE_CHECK_DELAY_PATH "/cluster/fence_daemon/@fence_check_delay"
+ #define OVERRIDE_PATH_PATH "/cluster/fence_daemon/@override_path"
+ #define OVERRIDE_TIME_PATH "/cluster/fence_daemon/@override_time"
+ #define METHOD_NAME_PATH "/cluster/clusternodes/clusternode[@name=\"%s\"]/fence/method[%d]/@name"
+@@ -118,6 +121,8 @@ void reread_ccs(void)
+ 		read_ccs_int(POST_JOIN_DELAY_PATH, &cfgd_post_join_delay);
+ 	if (!optd_post_fail_delay)
+ 		read_ccs_int(POST_FAIL_DELAY_PATH, &cfgd_post_fail_delay);
++	if (!optd_fence_check_delay)
++		read_ccs_int(FENCE_CHECK_DELAY_PATH, &cfgd_fence_check_delay);
+ 	if (!optd_override_time)
+ 		read_ccs_int(OVERRIDE_TIME_PATH, &cfgd_override_time);
+ }
+diff --git a/fence/fenced/config.h b/fence/fenced/config.h
+index d17ed1a..5f42dea 100644
+--- a/fence/fenced/config.h
++++ b/fence/fenced/config.h
+@@ -8,8 +8,10 @@
+ #define DEFAULT_SKIP_UNDEFINED 0
+ #define DEFAULT_POST_JOIN_DELAY 6
+ #define DEFAULT_POST_FAIL_DELAY 0
++#define DEFAULT_FENCE_CHECK_DELAY 5
+ #define DEFAULT_OVERRIDE_TIME 3
+ #define DEFAULT_OVERRIDE_PATH "/var/run/cluster/fenced_override"
++#define DEFAULT_FENCE_CHECK_PID_PATH "/var/run/fence_check.pid"
+ 
+ extern int optd_groupd_compat;
+ extern int optd_debug_logfile;
+@@ -18,6 +20,7 @@ extern int optd_disable_dbus;
+ extern int optd_skip_undefined;
+ extern int optd_post_join_delay;
+ extern int optd_post_fail_delay;
++extern int optd_fence_check_delay;
+ extern int optd_override_time;
+ extern int optd_override_path;
+ 
+@@ -28,6 +31,7 @@ extern int cfgd_disable_dbus;
+ extern int cfgd_skip_undefined;
+ extern int cfgd_post_join_delay;
+ extern int cfgd_post_fail_delay;
++extern int cfgd_fence_check_delay;
+ extern int cfgd_override_time;
+ extern const char *cfgd_override_path;
+ 
+diff --git a/fence/fenced/fd.h b/fence/fenced/fd.h
+index 21855b2..0be3332 100644
+--- a/fence/fenced/fd.h
++++ b/fence/fenced/fd.h
+@@ -22,6 +22,7 @@
+ #include <sys/poll.h>
+ #include <sys/select.h>
+ #include <sys/time.h>
++#include <sys/file.h>
+ 
+ #include <openais/saAis.h>
+ #include <corosync/cpg.h>
+diff --git a/fence/fenced/recover.c b/fence/fenced/recover.c
+index 13014c8..0b5e2b2 100644
+--- a/fence/fenced/recover.c
++++ b/fence/fenced/recover.c
+@@ -165,6 +165,37 @@ static int check_override(int ofd, char *nodename, int timeout)
+ 	return rv;
+ }
+ 
++static int fence_check_pid(void)
++{
++	char buf[16];
++	int fd, rv, pid = 0;
++
++	fd = open(DEFAULT_FENCE_CHECK_PID_PATH, O_RDONLY);
++	if (fd < 0)
++		return 0;
++
++	rv = flock(fd, LOCK_EX | LOCK_NB);
++	if (!rv) {
++		flock(fd, LOCK_UN);
++		goto out;
++	}
++
++	/* fence_check script is running, return its pid */
++
++	memset(buf, 0, sizeof(buf));
++
++	rv = read(fd, buf, sizeof(buf));
++	if (rv <= 0)
++		goto out;
++
++	pid = atoi(buf);
++	if (pid <= 0)
++		pid = 0;
++ out:
++	close(fd);
++	return pid;
++}
++
+ /* If there are victims after a node has joined, it's a good indication that
+    they may be joining the cluster shortly.  If we delay a bit they might
+    become members and we can avoid fencing them.  This is only really an issue
+@@ -174,13 +205,37 @@ static int check_override(int ofd, char *nodename, int timeout)
+ void delay_fencing(struct fd *fd, int node_join)
+ {
+ 	struct timeval first, last, start, now;
+-	int victim_count, last_count = 0, delay = 0;
++	int victim_count, last_count = 0, delay = 0, pid;
+ 	struct node *node;
+ 	const char *delay_type;
+ 
+ 	if (list_empty(&fd->victims))
+ 		return;
+ 
++	gettimeofday(&first, NULL);
++	gettimeofday(&start, NULL);
++
++	if (cfgd_fence_check_delay) {
++		for (;;) {
++			pid = fence_check_pid();
++			if (!pid)
++				break;
++
++			gettimeofday(&now, NULL);
++			if (now.tv_sec - start.tv_sec >= cfgd_fence_check_delay)
++				break;
++
++			log_debug("delay fencing for fence_check_pid %d", pid);
++			sleep(1);
++		}
++
++		if (pid) {
++			kill(pid, SIGTERM);
++			log_error("kill fence_check_pid %d delay %d",
++				  pid, cfgd_fence_check_delay);
++		}
++	}
++
+ 	if (node_join || cluster_quorate_from_last_update) {
+ 		delay = cfgd_post_join_delay;
+ 		delay_type = "post_join_delay";
+@@ -195,9 +250,6 @@ void delay_fencing(struct fd *fd, int node_join)
+ 	if (delay == 0)
+ 		goto out;
+ 
+-	gettimeofday(&first, NULL);
+-	gettimeofday(&start, NULL);
+-
+ 	for (;;) {
+ 		query_unlock();
+ 		sleep(1);

@@ -1,0 +1,25 @@
+commit e8a40d5346ced4898137ffee58f93e145c1bae7c
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Fri Sep 13 11:39:42 2013 -0500
+
+    mkfs.gfs2: Add missing 'K' option
+    
+    Before this patch, we tested for the 'K' option, but we were not
+    allowing it in the options to mkfs.gfs2. This patch adds the missing
+    'K' option to the call to getopt.
+    
+    rhbz#1007970
+
+diff --git a/gfs2/mkfs/main_mkfs.c b/gfs2/mkfs/main_mkfs.c
+index 7163cf1..b132af8 100644
+--- a/gfs2/mkfs/main_mkfs.c
++++ b/gfs2/mkfs/main_mkfs.c
+@@ -108,7 +108,7 @@ static void decode_arguments(int argc, char *argv[], struct gfs2_sbd *sdp)
+ 	sdp->orig_fssize = 0;
+ 
+ 	while (cont) {
+-		optchar = getopt(argc, argv, "-b:c:DhJ:j:Op:qr:t:u:VX");
++		optchar = getopt(argc, argv, "-b:c:DhJ:j:KOp:qr:t:u:VX");
+ 
+ 		switch (optchar) {
+ 		case 'b':

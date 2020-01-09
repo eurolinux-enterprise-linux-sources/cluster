@@ -1,0 +1,30 @@
+commit 88d1e87314a1088ea50b2c29c6b0205c9b34281c
+Author: David Teigland <teigland@redhat.com>
+Date:   Thu Jan 9 16:49:19 2014 -0600
+
+    man: update fence_node man page
+    
+    Document -S, -m, -e.
+    
+    Signed-off-by: David Teigland <teigland@redhat.com>
+
+diff --git a/fence/man/fence_node.8 b/fence/man/fence_node.8
+index fe26198..4a07313 100644
+--- a/fence/man/fence_node.8
++++ b/fence/man/fence_node.8
+@@ -76,6 +76,15 @@ Performed by a cluster node "against" itself during startup (by the cman init sc
+ .B \-U
+ Unfence the node, default local node name.
+ .TP
++.B \-S
++Run status on node name.
++.TP
++.BI \-m " num"
++Method number, starting from 1 (use with -S).
++.TP
++.BI \-e " 0|1"
++Enable/disable fenced_external notification.
++.TP
+ .B \-v
+ Show fence agent results, \-vv to also show agent args.
+ .TP

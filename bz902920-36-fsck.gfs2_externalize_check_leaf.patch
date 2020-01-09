@@ -1,0 +1,103 @@
+commit c525fe7e12a59d5e09491dd0de48eadbb56b6a75
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Wed Apr 3 07:13:52 2013 -0700
+
+    fsck.gfs2: externalize check_leaf
+    
+    This patch makes metawalk function check_leaf external so that it
+    may be called in a future patch for fixing hash tables.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index 16ddb97..a9fce81 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -481,9 +481,8 @@ static int check_entries(struct gfs2_inode *ip, struct gfs2_buffer_head *bh,
+  * Reads in the leaf block
+  * Leaves the buffer around for further analysis (caller must brelse)
+  */
+-static int check_leaf(struct gfs2_inode *ip, int lindex,
+-		      struct metawalk_fxns *pass,
+-		      uint64_t *leaf_no, struct gfs2_leaf *leaf, int *ref_count)
++int check_leaf(struct gfs2_inode *ip, int lindex, struct metawalk_fxns *pass,
++	       uint64_t *leaf_no, struct gfs2_leaf *leaf, int *ref_count)
+ {
+ 	int error = 0, fix;
+ 	struct gfs2_buffer_head *lbh = NULL;
+diff --git a/gfs2/fsck/metawalk.h b/gfs2/fsck/metawalk.h
+index 05b0e7a..2ba0d72 100644
+--- a/gfs2/fsck/metawalk.h
++++ b/gfs2/fsck/metawalk.h
+@@ -15,6 +15,9 @@ extern int check_dir(struct gfs2_sbd *sdp, uint64_t block,
+ 		     struct metawalk_fxns *pass);
+ extern int check_linear_dir(struct gfs2_inode *ip, struct gfs2_buffer_head *bh,
+ 			    struct metawalk_fxns *pass);
++extern int check_leaf(struct gfs2_inode *ip, int lindex,
++		      struct metawalk_fxns *pass, uint64_t *leaf_no,
++		      struct gfs2_leaf *leaf, int *ref_count);
+ extern int remove_dentry_from_dir(struct gfs2_sbd *sdp, uint64_t dir,
+ 						   uint64_t dentryblock);
+ extern int delete_block(struct gfs2_inode *ip, uint64_t block,
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index e10e4ce..0cf4373 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -34,7 +34,7 @@ struct block_count {
+ 	uint64_t ea_count;
+ };
+ 
+-static int check_leaf(struct gfs2_inode *ip, uint64_t block, void *private);
++static int p1check_leaf(struct gfs2_inode *ip, uint64_t block, void *private);
+ static int check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 			  struct gfs2_buffer_head **bh, int h, void *private);
+ static int undo_check_metalist(struct gfs2_inode *ip, uint64_t block,
+@@ -92,7 +92,7 @@ static int pass1_repair_leaf(struct gfs2_inode *ip, uint64_t *leaf_no,
+ 
+ struct metawalk_fxns pass1_fxns = {
+ 	.private = NULL,
+-	.check_leaf = check_leaf,
++	.check_leaf = p1check_leaf,
+ 	.check_metalist = check_metalist,
+ 	.check_data = check_data,
+ 	.check_eattr_indir = check_eattr_indir,
+@@ -210,7 +210,7 @@ struct metawalk_fxns sysdir_fxns = {
+ 	.check_dentry = resuscitate_dentry,
+ };
+ 
+-static int check_leaf(struct gfs2_inode *ip, uint64_t block, void *private)
++static int p1check_leaf(struct gfs2_inode *ip, uint64_t block, void *private)
+ {
+ 	struct block_count *bc = (struct block_count *) private;
+ 	uint8_t q;
+diff --git a/gfs2/fsck/pass1b.c b/gfs2/fsck/pass1b.c
+index d873aa6..7680bc1 100644
+--- a/gfs2/fsck/pass1b.c
++++ b/gfs2/fsck/pass1b.c
+@@ -26,7 +26,7 @@ struct dup_handler {
+ 	int ref_count;
+ };
+ 
+-static int check_leaf(struct gfs2_inode *ip, uint64_t block, void *private);
++static int check_leaf_refs(struct gfs2_inode *ip, uint64_t block, void *private);
+ static int check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 			  struct gfs2_buffer_head **bh, int h, void *private);
+ static int check_data(struct gfs2_inode *ip, uint64_t metablock,
+@@ -54,7 +54,7 @@ static int find_dentry(struct gfs2_inode *ip, struct gfs2_dirent *de,
+ 
+ struct metawalk_fxns find_refs = {
+ 	.private = NULL,
+-	.check_leaf = check_leaf,
++	.check_leaf = check_leaf_refs,
+ 	.check_metalist = check_metalist,
+ 	.check_data = check_data,
+ 	.check_eattr_indir = check_eattr_indir,
+@@ -76,7 +76,7 @@ struct metawalk_fxns find_dirents = {
+ 	.check_eattr_extentry = NULL,
+ };
+ 
+-static int check_leaf(struct gfs2_inode *ip, uint64_t block, void *private)
++static int check_leaf_refs(struct gfs2_inode *ip, uint64_t block, void *private)
+ {
+ 	return add_duplicate_ref(ip, block, ref_as_meta, 1, INODE_VALID);
+ }

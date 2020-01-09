@@ -1,0 +1,230 @@
+commit 3b9975dd964a32f8d673f171a7e052f0e4af6c5d
+Author: Lon Hohberger <lhh@redhat.com>
+Date:   Fri May 6 10:14:04 2011 -0400
+
+    qdiskd: Make multipath issues go away
+    
+    Qdiskd hsitorically has required significant tuning to work around
+    delays which occur during multipath failover, overloaded I/O, and LUN
+    trespasses in both device-mapper-multipath and EMC PowerPath
+    environments.
+    
+    This patch goes a very long way towards eliminating false evictions
+    when these conditions occur by making qdiskd whine to the other
+    cluster members when it detects hung system calls.  When a cluster
+    member whines, it indicates the source of the problem (which system
+    call is hung), and the act of receiving a whine from a host indicates
+    that qdiskd is operational, but that I/O is hung.  Hung I/O is different
+    from losing storage entirely (where you get I/O errors).
+    
+    Possible problems:
+    
+    - Receive queue getting very full, causing messages to become blocked on
+    a node where I/O is hung.  1) that would take a very long time, and 2)
+    node should get evicted at that point anyway.
+    
+    Resolves: rhbz#678372
+    
+    Signed-off-by: Lon Hohberger <lhh@redhat.com>
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/cman/qdisk/Makefile b/cman/qdisk/Makefile
+index 68e20cd..e3bb5f7 100644
+--- a/cman/qdisk/Makefile
++++ b/cman/qdisk/Makefile
+@@ -40,7 +40,7 @@ ${TARGET1}: ${SHAREDOBJS} ${OBJS1}
+ 	$(CC) -o $@ $^ $(EXTRA_LDFLAGS) $(LDFLAGS)
+ 
+ ${TARGET2}: ${SHAREDOBJS} ${OBJS2}
+-	$(CC) -o $@ $^ $(LDFLAGS)
++	$(CC) -o $@ $^ $(EXTRA_LDFLAGS) $(LDFLAGS)
+ 
+ depends:
+ 	$(MAKE) -C ../lib all
+diff --git a/cman/qdisk/disk.h b/cman/qdisk/disk.h
+index 93d15fe..fd80fa6 100644
+--- a/cman/qdisk/disk.h
++++ b/cman/qdisk/disk.h
+@@ -273,6 +273,12 @@ typedef struct {
+ 	status_block_t ni_status;
+ } node_info_t;
+ 
++typedef struct {
++	qd_ctx *ctx;
++	node_info_t *ni;
++	size_t ni_len;
++} qd_priv_t;
++
+ int qd_write_status(qd_ctx *ctx, int nid, disk_node_state_t state,
+ 		    disk_msg_t *msg, memb_mask_t mask, memb_mask_t master);
+ int qd_init(qd_ctx *ctx, cman_handle_t ch_admin,
+diff --git a/cman/qdisk/iostate.c b/cman/qdisk/iostate.c
+index 0199da4..06c6831 100644
+--- a/cman/qdisk/iostate.c
++++ b/cman/qdisk/iostate.c
+@@ -1,9 +1,12 @@
+ #include <pthread.h>
++#include <libcman.h>
+ #include <iostate.h>
+ #include <unistd.h>
+ #include <time.h>
+ #include <sys/time.h>
+ #include <liblogthread.h>
++#include <stdint.h>
++#include "platform.h"
+ #include "iostate.h"
+ 
+ static iostate_t main_state = 0;
+@@ -26,7 +29,7 @@ static struct state_table io_state_table[] = {
+ {	STATE_LSEEK,	"seek"	},
+ {	-1,		NULL	} };
+ 
+-static const char *
++const char *
+ state_to_string(iostate_t state)
+ {
+ 	static const char *ret = "unknown";
+@@ -65,6 +68,8 @@ io_nanny_thread(void *arg)
+ 	iostate_t last_main_state = 0, current_main_state = 0;
+ 	int last_main_incarnation = 0, current_main_incarnation = 0;
+ 	int logged_incarnation = 0;
++	cman_handle_t ch = (cman_handle_t)arg;
++	int32_t whine_state;
+ 
+ 	/* Start with wherever we're at now */
+ 	pthread_mutex_lock(&state_mutex);
+@@ -96,6 +101,11 @@ io_nanny_thread(void *arg)
+ 			continue;
+ 		}
+ 
++		/* Whine on CMAN api */
++		whine_state = (int32_t)current_main_state;
++		swab32(whine_state);
++		cman_send_data(ch, &whine_state, sizeof(int32_t), 0, 178, 0);
++
+ 		/* Don't log things twice */
+ 		if (logged_incarnation == current_main_incarnation)
+ 			continue;
+@@ -114,7 +124,7 @@ io_nanny_thread(void *arg)
+ 
+ 
+ int
+-io_nanny_start(int timeout)
++io_nanny_start(cman_handle_t ch, int timeout)
+ {
+ 	int ret;
+ 
+@@ -124,7 +134,7 @@ io_nanny_start(int timeout)
+ 	qdisk_timeout = timeout;
+ 	thread_active = 1;
+ 
+-	ret = pthread_create(&io_nanny_tid, NULL, io_nanny_thread, NULL);
++	ret = pthread_create(&io_nanny_tid, NULL, io_nanny_thread, ch);
+ 	pthread_mutex_unlock(&state_mutex);
+ 
+ 	return ret;
+diff --git a/cman/qdisk/iostate.h b/cman/qdisk/iostate.h
+index 7dd7bf6..a65b1d4 100644
+--- a/cman/qdisk/iostate.h
++++ b/cman/qdisk/iostate.h
+@@ -11,7 +11,9 @@ typedef enum {
+ 
+ void io_state(iostate_t state);
+ 
+-int io_nanny_start(int timeout);
++int io_nanny_start(cman_handle_t ch, int timeout);
+ int io_nanny_stop(void);
+ 
++const char * state_to_string(iostate_t state);
++
+ #endif
+diff --git a/cman/qdisk/main.c b/cman/qdisk/main.c
+index a90e82c..d613d84 100644
+--- a/cman/qdisk/main.c
++++ b/cman/qdisk/main.c
+@@ -915,7 +915,8 @@ cman_wait(cman_handle_t ch, struct timeval *_tv)
+ static void
+ process_cman_event(cman_handle_t handle, void *private, int reason, int arg)
+ {
+-	qd_ctx *ctx = (qd_ctx *)private;
++	qd_priv_t *qp = (qd_priv_t *)private;
++	qd_ctx *ctx = qp->ctx;
+ 
+ 	switch(reason) {
+ 	case CMAN_REASON_PORTOPENED:
+@@ -1926,6 +1927,33 @@ check_stop_cman(qd_ctx *ctx)
+ do { static int _logged=0; if (!_logged) { _logged=1; logt_print(level, fmt, ##args); } } while(0)
+ 
+ 
++static void
++qdisk_whine(cman_handle_t h, void *privdata, char *buf, int len,
++	    uint8_t port, int nodeid)
++{
++	int32_t dstate;
++	qd_priv_t *qp = (qd_priv_t *)privdata;
++	node_info_t *ni = qp->ni;
++
++	if (len != sizeof(dstate)) {
++		return;
++	}
++
++	dstate = *((int32_t*)buf);
++
++	if (nodeid == (qp->ctx->qc_my_id))
++		return;
++
++	swab32(dstate);
++
++	if (dstate) {
++		logt_print(LOG_NOTICE, "qdiskd on node %d reports hung %s()\n", nodeid,
++			   state_to_string(dstate));
++		ni[nodeid-1].ni_misses = 0;
++	}
++}
++
++
+ int
+ main(int argc, char **argv)
+ {
+@@ -1939,6 +1967,7 @@ main(int argc, char **argv)
+ 	char device[128];
+ 	pid_t pid;
+ 	quorum_header_t qh;
++	qd_priv_t qp;
+ 
+ 	if (check_process_running(argv[0], &pid) && pid !=getpid()) {
+ 		printf("QDisk services already running\n");
+@@ -2001,13 +2030,23 @@ main(int argc, char **argv)
+ 
+ 	/* For cman notifications we need two sockets - one for events,
+ 	   one for config change callbacks */
+-	ch_user = cman_init(&ctx);
++	qp.ctx = &ctx;
++	qp.ni = &ni[0];
++	qp.ni_len = MAX_NODES_DISK;
++
++	ch_user = cman_init(&qp);
+         if (cman_start_notification(ch_user, process_cman_event) != 0) {
+ 		logt_print(LOG_CRIT, "Could not register with CMAN: %s\n",
+ 			   strerror(errno));
+ 		goto out;
+ 	}
+ 
++	if (cman_start_recv_data(ch_user, qdisk_whine, 178) != 0) {
++		logt_print(LOG_CRIT, "Could not register with CMAN: %s\n",
++			   strerror(errno));
++		goto out;
++	}
++
+ 	memset(&me, 0, sizeof(me));
+ 	if (cman_get_node(ch_admin, CMAN_NODEID_US, &me) < 0) {
+ 		logt_print(LOG_CRIT, "Could not determine local node ID: %s\n",
+@@ -2108,7 +2147,7 @@ main(int argc, char **argv)
+ 		}
+ 	}
+ 
+-	io_nanny_start(ctx.qc_tko * ctx.qc_interval);
++	io_nanny_start(ch_user, ctx.qc_tko * ctx.qc_interval);
+ 
+ 	if (quorum_loop(&ctx, ni, MAX_NODES_DISK) == 0) {
+ 		/* Only clean up if we're exiting w/o error) */

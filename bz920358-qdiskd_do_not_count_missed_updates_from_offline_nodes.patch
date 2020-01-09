@@ -1,0 +1,37 @@
+commit 6ac07a7ec331e8f9c1b238e49144731cd48c0150
+Author: John Ruemker <jruemker@redhat.com>
+Date:   Wed Mar 13 11:17:41 2013 -0400
+
+    qdiskd: Do not count missed updates from offline nodes
+    
+    After qdiskd initialization, nodes that have not yet been online may
+    have missed updates counted, leading to eviction.  This change skips
+    counting missed updates for nodes with state S_NONE.
+    
+    Resolves: rhbz#920358
+
+diff --git a/cman/qdisk/main.c b/cman/qdisk/main.c
+index 68e72c7..4d4397a 100644
+--- a/cman/qdisk/main.c
++++ b/cman/qdisk/main.c
+@@ -198,12 +198,14 @@ read_node_blocks(qd_ctx *ctx, node_info_t *ni, int max)
+ 		/* Unchanged timestamp: miss */
+ 		if ((sb->ps_timestamp == ni[x].ni_last_seen) &&
+ 		    (ni[x].ni_state != S_EXIT)) {
+-			/* XXX check for average + allow grace */
+-			ni[x].ni_misses++;
+-			if (ni[x].ni_misses > 1) {
+-				logt_print(LOG_DEBUG,
+-					"Node %d missed an update (%d/%d)\n",
+-					x+1, ni[x].ni_misses, ctx->qc_tko);
++			if (ni[x].ni_state != S_NONE) {
++				/* XXX check for average + allow grace */
++				ni[x].ni_misses++;
++				if (ni[x].ni_misses > 1) {
++					logt_print(LOG_DEBUG,
++						"Node %d missed an update (%d/%d)\n",
++						x+1, ni[x].ni_misses, ctx->qc_tko);
++				}
+ 			}
+ 			continue;
+ 		}

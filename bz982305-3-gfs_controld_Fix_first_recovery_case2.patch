@@ -1,0 +1,48 @@
+commit cca7cf733d03a58d94eb4ab3bee7dcc2e39b7ea1
+Author: David Teigland <teigland@redhat.com>
+Date:   Tue Jul 9 11:54:06 2013 -0500
+
+    gfs_controld: fix first recovery case 2
+    
+    - node A is doing first recovery
+    - node B joins the mount group and is waiting for A to finish
+    - node A sets some journals X and Y as needing recovery based
+      on start message from A (it's not clear how/why A has journals
+      X,Y marked as needing recovery if it's doing first recovery.)
+    - node A completes first recovery and sends first recovery done
+      message
+    - node B still has X,Y journals as needing recovery, which
+      prevents the mount group recovery from completing
+    
+    node B should clear the needs recovery state on any journals
+    when it receives first recovery done.
+    
+    bz 982305
+    
+    Signed-off-by: David Teigland <teigland@redhat.com>
+
+diff --git a/group/gfs_controld/cpg-new.c b/group/gfs_controld/cpg-new.c
+index 8943f62..845d183 100644
+--- a/group/gfs_controld/cpg-new.c
++++ b/group/gfs_controld/cpg-new.c
+@@ -1544,12 +1544,20 @@ static void receive_recovery_result(struct mountgroup *mg,
+ static void receive_first_recovery_done(struct mountgroup *mg,
+ 					struct gfs_header *hd, int len)
+ {
++	struct journal *j;
+ 	int master = mg->first_recovery_master;
+ 
+ 	log_group(mg, "receive_first_recovery_done from %d master %d "
+ 		  "mount_client_notified %d",
+ 		  hd->nodeid, master, mg->mount_client_notified);
+ 
++	list_for_each_entry(j, &mg->journals, list) {
++		if (!j->needs_recovery)
++			continue;
++		j->needs_recovery = 0;
++		log_debug("receive_first_recovery_done clear %d needs_recovery", j->jid);
++	}
++
+ 	if (list_empty(&mg->changes)) {
+ 		/* everything is idle, no changes in progress */
+ 

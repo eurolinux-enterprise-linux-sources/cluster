@@ -1,0 +1,32 @@
+commit 18ddd5d171e09b73125f82930429eb383851a294
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Thu Jan 17 08:53:29 2013 +0100
+
+    config: fix cluster.conf man page to reflect correct syslog_facility default
+    
+    Resolves: rhbz#896191
+    
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/config/man/cluster.conf.5 b/config/man/cluster.conf.5
+index aa653be..ad2cfee 100644
+--- a/config/man/cluster.conf.5
++++ b/config/man/cluster.conf.5
+@@ -136,7 +136,7 @@ enable/disable messages to log file (yes/no), default "yes"
+ 
+ .TP 8
+ .B syslog_facility
+-facility used for syslog messages, default "daemon"
++facility used for syslog messages, default "local4"
+ 
+ .TP 8
+ .B syslog_priority
+@@ -158,7 +158,7 @@ a shortcut for logfile_priority="debug"
+ An explicit configuration for the default settings would be:
+ .P
+ .nf
+-<logging to_syslog="yes" to_logfile="yes" syslog_facility="daemon"
++<logging to_syslog="yes" to_logfile="yes" syslog_facility="local4"
+          syslog_priority="info" logfile_priority="info">
+     <logging_daemon name="qdiskd"
+              logfile="/var/log/cluster/qdiskd.log"/>

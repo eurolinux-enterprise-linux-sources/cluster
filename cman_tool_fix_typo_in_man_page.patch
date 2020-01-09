@@ -1,0 +1,23 @@
+commit bff1508969673a745ef9935e7fd97f07844774f3
+Author: Masatake YAMATO <yamato@redhat.com>
+Date:   Mon Mar 28 14:53:00 2011 +0200
+
+    cman_tool: fix typo in man page
+    
+    Resolves: rhbz#672792
+    
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/cman/man/cman_tool.8 b/cman/man/cman_tool.8
+index bd710a2..d08ccd0 100644
+--- a/cman/man/cman_tool.8
++++ b/cman/man/cman_tool.8
+@@ -326,7 +326,7 @@ include: id, name, type, and addr.
+ .br
+ .SH "DEBUG" OPTIONS
+ .TP
+-.I -d <value>
++.I -d<value>
+ The value is a bitmask of
+ .br 
+ 2 Barriers

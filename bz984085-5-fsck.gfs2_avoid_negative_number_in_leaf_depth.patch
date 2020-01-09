@@ -1,0 +1,31 @@
+commit 6e8aeb238f96b77b85c2601809f23e2cc898d1ff
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Mon Jul 15 14:25:43 2013 -0500
+
+    fsck.gfs2: avoid negative number in leaf depth
+    
+    If a leaf block appears many times by mistake in the same hash table,
+    there's a chance it belongs in a different directory's hash table, and
+    was put there by mistake. In that case, the leaf depth may be too
+    big for the directory in which it improperly appears. When that happens,
+    function check_leaf_depth can come up with a negative number when it
+    calculates the depth. This patch prevents the negative leaf depth error
+    by flagging an error when it determines the leaf depth is wrong.
+    The error causes pass2 to relocate the leaf to lost+found when it returns.
+    
+    rhbz#984085
+
+diff --git a/gfs2/fsck/pass2.c b/gfs2/fsck/pass2.c
+index c243a5a..4bbaadb 100644
+--- a/gfs2/fsck/pass2.c
++++ b/gfs2/fsck/pass2.c
+@@ -274,6 +274,9 @@ static int check_leaf_depth(struct gfs2_inode *ip, uint64_t leaf_no,
+ 		factor++;
+ 		divisor >>= 1;
+ 	}
++	if (ip->i_di.di_depth < factor) /* can't be fixed--leaf must be on the
++					   wrong dinode. */
++		return -1;
+ 	correct_depth = ip->i_di.di_depth - factor;
+ 	if (cur_depth == correct_depth)
+ 		return 0;

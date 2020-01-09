@@ -1,0 +1,46 @@
+From f6f7fc44566dc95c983a24b5b51d5b0d4f36f2e9 Mon Sep 17 00:00:00 2001
+From: Bob Peterson <rpeterso@redhat.com>
+Date: Mon, 17 Dec 2012 15:11:34 -0600
+Subject: [PATCH 5/8] gfs2_convert: calculate height 1 for small files that
+ were once big
+
+This patch changes function calc_gfs2_tree_height so that it gives
+a height of 1 to small files that once were big. The problems here
+is with files that were once big (needed two levels of indirection
+(height 2)) and then are truncated to a tiny non-zero size
+(ordinarily, they would be stuffed, but due to the growth followed
+by truncate, they're still at height 2). The required GFS2 height is
+zero, whereas the GFS1 height is 2. After the conversion the file
+will not really be stuffed, because function fix_metatree will
+unstuff the dinode as part of its conversion. So at least it will
+be at height 1. The problem is that if we don't fix the 0 height to
+its proper value of 1, fix_ind_reg_or_dir gets called with gfs2_hgt=0,
+which then calls mp_gfs1_to_gfs2, which then tries to set:
+gfs2factor[gfs2_h - 1] = 1ull. This results in a negative index of the
+array.
+
+rhbz#888053
+---
+ gfs2/convert/gfs2_convert.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/gfs2/convert/gfs2_convert.c b/gfs2/convert/gfs2_convert.c
+index 7610c6b..d6fe1c8 100644
+--- a/gfs2/convert/gfs2_convert.c
++++ b/gfs2/convert/gfs2_convert.c
+@@ -258,6 +258,12 @@ static unsigned int calc_gfs2_tree_height(struct gfs2_inode *ip, uint64_t size)
+ 	for (height = 0; height < max; height++)
+ 		if (arr[height] >= size)
+ 			break;
++	/* If calc_gfs2_tree_height was called, the dinode is not stuffed or
++	   we would have returned before this point. After the call, a call is
++	   made to fix_metatree, which unstuffs the dinode. Therefore, the
++	   smallest height that can result after this call is 1. */
++	if (!height)
++		height = 1;
+ 
+ 	return height;
+ }
+-- 
+1.7.11.7
+

@@ -1,0 +1,180 @@
+commit d44048a47efe1784bdcb3da3b995fc77259bebb7
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Tue Aug 9 14:07:21 2011 -0500
+
+    fsck.gfs2: misc cosmetic changes
+    
+    This patch is just cosmetic changes.  It cleans up comments and code
+    but there should be no logic changes.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index 92973ae..9b68de8 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -453,15 +453,14 @@ static int warn_and_patch(struct gfs2_inode *ip, uint64_t *leaf_no,
+ 	}
+ 	if (*leaf_no == *bad_leaf ||
+ 	    (okay_to_fix = query( _("Attempt to patch around it? (y/n) ")))) {
+-		if (!valid_block(ip->i_sbd, old_leaf) == 0)
++		if (valid_block(ip->i_sbd, old_leaf))
+ 			gfs2_put_leaf_nr(ip, pindex, old_leaf);
+ 		else
+ 			gfs2_put_leaf_nr(ip, pindex, first_ok_leaf);
+ 		log_err( _("Directory Inode %llu (0x%llx) repaired.\n"),
+ 			 (unsigned long long)ip->i_di.di_num.no_addr,
+ 			 (unsigned long long)ip->i_di.di_num.no_addr);
+-	}
+-	else
++	} else
+ 		log_err( _("Bad leaf left in place.\n"));
+ 	*bad_leaf = *leaf_no;
+ 	*leaf_no = old_leaf;
+@@ -610,9 +609,9 @@ static int check_leaf_blks(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 	   leaf. That way, bad blocks at the beginning will be overwritten
+ 	   with the first valid leaf. */
+ 	first_ok_leaf = leaf_no = -1;
+-	for(lindex = 0; lindex < (1 << ip->i_di.di_depth); lindex++) {
++	for (lindex = 0; lindex < (1 << ip->i_di.di_depth); lindex++) {
+ 		gfs2_get_leaf_nr(ip, lindex, &leaf_no);
+-		if (!valid_block(ip->i_sbd, leaf_no) == 0) {
++		if (valid_block(ip->i_sbd, leaf_no)) {
+ 			lbh = bread(sdp, leaf_no);
+ 			/* Make sure it's really a valid leaf block. */
+ 			if (gfs2_check_meta(lbh, GFS2_METATYPE_LF) == 0) {
+@@ -638,11 +637,9 @@ static int check_leaf_blks(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 		gfs2_get_leaf_nr(ip, lindex, &leaf_no);
+ 
+ 		/* GFS has multiple indirect pointers to the same leaf
+-		 * until those extra pointers are needed, so skip the
+-		 * dups */
++		 * until those extra pointers are needed, so skip the dups */
+ 		if (leaf_no == bad_leaf) {
+-			gfs2_put_leaf_nr(ip, lindex, old_leaf); /* fill w/old
+-								  leaf info */
++			gfs2_put_leaf_nr(ip, lindex, old_leaf);
+ 			ref_count++;
+ 			continue;
+ 		} else if (old_leaf == leaf_no) {
+@@ -812,7 +809,7 @@ int delete_block(struct gfs2_inode *ip, uint64_t block,
+ 		 struct gfs2_buffer_head **bh, const char *btype,
+ 		 void *private)
+ {
+-	if (!valid_block(ip->i_sbd, block) == 0) {
++	if (valid_block(ip->i_sbd, block)) {
+ 		fsck_blockmap_set(ip, block, btype, gfs2_block_free);
+ 		return 0;
+ 	}
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index 7077272..f5ec37a 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -371,7 +371,7 @@ static int check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 
+ 	*bh = NULL;
+ 
+-	if (!valid_block(ip->i_sbd, block)){ /* blk outside of FS */
++	if (!valid_block(ip->i_sbd, block)) { /* blk outside of FS */
+ 		fsck_blockmap_set(ip, ip->i_di.di_num.no_addr,
+ 				  _("itself"), gfs2_bad_block);
+ 		log_debug( _("Bad indirect block (invalid/out of range) "
+@@ -445,7 +445,7 @@ static int undo_check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 
+ 	*bh = NULL;
+ 
+-	if (!valid_block(ip->i_sbd, block)){ /* blk outside of FS */
++	if (!valid_block(ip->i_sbd, block)) { /* blk outside of FS */
+ 		fsck_blockmap_set(ip, ip->i_di.di_num.no_addr,
+ 				  _("itself"), gfs2_block_free);
+ 		return 1;
+@@ -866,7 +866,7 @@ static int check_extended_leaf_eattr(struct gfs2_inode *ip, uint64_t *data_ptr,
+ 	struct gfs2_buffer_head *bh = NULL;
+ 	int error;
+ 
+-	if (!valid_block(sdp, el_blk)){
++	if (!valid_block(sdp, el_blk)) {
+ 		log_err( _("Inode #%llu (0x%llx): Extended Attribute block "
+ 			   "%llu (0x%llx) has an extended leaf block #%llu "
+ 			   "(0x%llx) that is invalid or out of range.\n"),
+@@ -1058,7 +1058,7 @@ static int rangecheck_block(struct gfs2_inode *ip, uint64_t block,
+ 	long *bad_pointers = (long *)private;
+ 	uint8_t q;
+ 
+-	if (!valid_block(ip->i_sbd, block) != 0) {
++	if (!valid_block(ip->i_sbd, block)) {
+ 		(*bad_pointers)++;
+ 		log_info( _("Bad %s block pointer (invalid or out of range "
+ 			    "#%ld) found in inode %lld (0x%llx).\n"),
+diff --git a/gfs2/fsck/pass1b.c b/gfs2/fsck/pass1b.c
+index 259eb7a..67b8d14 100644
+--- a/gfs2/fsck/pass1b.c
++++ b/gfs2/fsck/pass1b.c
+@@ -209,7 +209,7 @@ static int clear_dup_metalist(struct gfs2_inode *ip, uint64_t block,
+ 	struct dup_handler *dh = (struct dup_handler *) private;
+ 	struct duptree *d;
+ 
+-	if (!valid_block(ip->i_sbd, block) != 0)
++	if (!valid_block(ip->i_sbd, block))
+ 		return 0;
+ 
+ 	/* This gets tricky. We're traversing a metadata tree trying to
+@@ -625,9 +625,10 @@ int pass1b(struct gfs2_sbd *sdp)
+ 	/* Rescan the fs looking for pointers to blocks that are in
+ 	 * the duplicate block map */
+ 	log_info( _("Scanning filesystem for inodes containing duplicate blocks...\n"));
+-	log_debug( _("Filesystem has %"PRIu64" (0x%" PRIx64 ") blocks total\n"),
+-			  last_fs_block, last_fs_block);
+-	for(i = 0; i < last_fs_block; i++) {
++	log_debug( _("Filesystem has %llu (0x%llx) blocks total\n"),
++		  (unsigned long long)last_fs_block,
++		  (unsigned long long)last_fs_block);
++	for (i = 0; i < last_fs_block; i++) {
+ 		if (skip_this_pass || fsck_abort) /* if asked to skip the rest */
+ 			goto out;
+ 
+diff --git a/gfs2/fsck/pass2.c b/gfs2/fsck/pass2.c
+index 5fe5454..7f32903 100644
+--- a/gfs2/fsck/pass2.c
++++ b/gfs2/fsck/pass2.c
+@@ -767,7 +767,7 @@ int pass2(struct gfs2_sbd *sdp)
+ 		return FSCK_OK;
+ 	log_info( _("Checking directory inodes.\n"));
+ 	/* Grab each directory inode, and run checks on it */
+-	for(dirblk = 0; dirblk < last_fs_block; dirblk++) {
++	for (dirblk = 0; dirblk < last_fs_block; dirblk++) {
+ 		warm_fuzzy_stuff(dirblk);
+ 		if (skip_this_pass || fsck_abort) /* if asked to skip the rest */
+ 			return FSCK_OK;
+diff --git a/gfs2/fsck/pass5.c b/gfs2/fsck/pass5.c
+index b71b2b6..814f202 100644
+--- a/gfs2/fsck/pass5.c
++++ b/gfs2/fsck/pass5.c
+@@ -43,13 +43,14 @@ static int convert_mark(uint8_t q, uint32_t *count)
+ 
+ 	default:
+ 		log_err( _("Invalid block type %d found\n"), q);
+-		return -1;
+ 	}
+ 	return -1;
+ }
+ 
+-static int check_block_status(struct gfs2_sbd *sdp, char *buffer, unsigned int buflen,
+-					   uint64_t *rg_block, uint64_t rg_data, uint32_t *count)
++
++static int check_block_status(struct gfs2_sbd *sdp, char *buffer,
++			      unsigned int buflen, uint64_t *rg_block,
++			      uint64_t rg_data, uint32_t *count)
+ {
+ 	unsigned char *byte, *end;
+ 	unsigned int bit;
+@@ -150,7 +151,8 @@ static void update_rgrp(struct gfs2_sbd *sdp, struct rgrp_list *rgp,
+ 
+ 		/* update the bitmaps */
+ 		check_block_status(sdp, rgp->bh[i]->b_data + bits->bi_offset,
+-						   bits->bi_len, &rg_block, rgp->ri.ri_data0, count);
++				   bits->bi_len, &rg_block, rgp->ri.ri_data0,
++				   count);
+ 		if (skip_this_pass || fsck_abort) /* if asked to skip the rest */
+ 			return;
+ 	}

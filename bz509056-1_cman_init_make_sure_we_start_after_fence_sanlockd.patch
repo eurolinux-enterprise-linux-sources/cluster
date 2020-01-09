@@ -1,0 +1,48 @@
+commit cdce3c1925cb75e21c79c31b60269642e98e256d
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Tue Oct 9 11:28:43 2012 +0200
+
+    cman init: make sure we start after fence_sanlockd and warn users
+    
+    Resolves: rhbz#509056
+    
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/cman/init.d/cman.in b/cman/init.d/cman.in
+index b64bb17..0f40097 100644
+--- a/cman/init.d/cman.in
++++ b/cman/init.d/cman.in
+@@ -8,8 +8,8 @@
+ #
+ ### BEGIN INIT INFO
+ # Provides:		cman
+-# Required-Start:	$network $time
+-# Required-Stop:	$network $time
++# Required-Start:	$network $time fence_sanlockd
++# Required-Stop:	$network $time fence_sanlockd
+ # Default-Start:
+ # Default-Stop:
+ # Short-Description:	Starts and stops cman
+@@ -678,6 +678,13 @@ stop_cmannotifyd()
+ 	stop_daemon cmannotifyd
+ }
+ 
++fence_sanlock_check()
++{
++	service fence_sanlockd status > /dev/null 2>&1 &&
++		echo "   fence_sanlockd detected. Unfencing might take several minutes!"
++	return 0
++}
++
+ unfence_self()
+ {
+ 	# fence_node returns 0 on success, 1 on failure, 2 if unconfigured
+@@ -818,6 +825,8 @@ start()
+ 
+ 	[ "$breakpoint" = "daemons" ] && exit 0
+ 
++	fence_sanlock_check
++
+ 	runwrap unfence_self \
+ 		none \
+ 		"Unfencing self"

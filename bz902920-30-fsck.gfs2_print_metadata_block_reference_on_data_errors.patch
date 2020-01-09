@@ -1,0 +1,229 @@
+commit d5a2afb07d27e1822f14d1dd3b33464a738fa6f6
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Tue Apr 2 11:45:09 2013 -0700
+
+    fsck.gfs2: print metadata block reference on data errors
+    
+    Before this patch, fsck.gfs2 would cite data block errors, but it
+    wouldn't tell you which metadata block referenced the bad data block.
+    That's fine, but it makes it very difficult to backtrack problems.
+    This patch prints out which metadata block referenced the bad data
+    so it may be backtracked easier.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index c1c7bfb..9b6c391 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -1297,11 +1297,14 @@ static int build_and_check_metalist(struct gfs2_inode *ip, osi_list_t *mlp,
+  *          2 (ENOENT) is there were too many bad pointers
+  */
+ static int check_data(struct gfs2_inode *ip, struct metawalk_fxns *pass,
+-		      uint64_t *ptr_start, char *ptr_end,
++		      struct gfs2_buffer_head *bh, int head_size,
+ 		      uint64_t *blks_checked)
+ {
+ 	int error = 0, rc = 0;
+ 	uint64_t block, *ptr;
++	uint64_t *ptr_start = (uint64_t *)(bh->b_data + head_size);
++	char *ptr_end = (bh->b_data + ip->i_sbd->bsize);
++	uint64_t metablock = bh->b_blocknr;
+ 
+ 	/* If there isn't much pointer corruption check the pointers */
+ 	for (ptr = ptr_start ; (char *)ptr < ptr_end && !fsck_abort; ptr++) {
+@@ -1316,7 +1319,7 @@ static int check_data(struct gfs2_inode *ip, struct metawalk_fxns *pass,
+ 		   would defeat the rangecheck_block related functions in
+ 		   pass1. Therefore the individual check_data functions
+ 		   should do a range check. */
+-		rc = pass->check_data(ip, block, pass->private);
++		rc = pass->check_data(ip, metablock, block, pass->private);
+ 		if (rc < 0)
+ 			return rc;
+ 		if (!error && rc)
+@@ -1431,9 +1434,7 @@ int check_metatree(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 		}
+ 
+ 		if (pass->check_data)
+-			error = check_data(ip, pass, (uint64_t *)
+-					   (bh->b_data + head_size),
+-					   (bh->b_data + ip->i_sbd->bsize),
++			error = check_data(ip, pass, bh, head_size,
+ 					   &blks_checked);
+ 
+ 		if (pass->big_file_msg && ip->i_di.di_blocks > COMFORTABLE_BLKS)
+@@ -1601,7 +1602,8 @@ int delete_leaf(struct gfs2_inode *ip, uint64_t block, void *private)
+ 	return delete_block_if_notdup(ip, block, NULL, _("leaf"), private);
+ }
+ 
+-int delete_data(struct gfs2_inode *ip, uint64_t block, void *private)
++int delete_data(struct gfs2_inode *ip, uint64_t metablock,
++		uint64_t block, void *private)
+ {
+ 	return delete_block_if_notdup(ip, block, NULL, _("data"), private);
+ }
+@@ -1662,7 +1664,8 @@ static int alloc_metalist(struct gfs2_inode *ip, uint64_t block,
+ 	return 0;
+ }
+ 
+-static int alloc_data(struct gfs2_inode *ip, uint64_t block, void *private)
++static int alloc_data(struct gfs2_inode *ip, uint64_t metablock,
++		      uint64_t block, void *private)
+ {
+ 	uint8_t q;
+ 	const char *desc = (const char *)private;
+diff --git a/gfs2/fsck/metawalk.h b/gfs2/fsck/metawalk.h
+index f5e71e1..05b0e7a 100644
+--- a/gfs2/fsck/metawalk.h
++++ b/gfs2/fsck/metawalk.h
+@@ -23,7 +23,8 @@ extern int delete_block(struct gfs2_inode *ip, uint64_t block,
+ extern int delete_metadata(struct gfs2_inode *ip, uint64_t block,
+ 			   struct gfs2_buffer_head **bh, int h, void *private);
+ extern int delete_leaf(struct gfs2_inode *ip, uint64_t block, void *private);
+-extern int delete_data(struct gfs2_inode *ip, uint64_t block, void *private);
++extern int delete_data(struct gfs2_inode *ip, uint64_t metablock,
++		       uint64_t block, void *private);
+ extern int delete_eattr_indir(struct gfs2_inode *ip, uint64_t block, uint64_t parent,
+ 		       struct gfs2_buffer_head **bh, void *private);
+ extern int delete_eattr_leaf(struct gfs2_inode *ip, uint64_t block, uint64_t parent,
+@@ -76,8 +77,8 @@ struct metawalk_fxns {
+ 	int (*check_metalist) (struct gfs2_inode *ip, uint64_t block,
+ 			       struct gfs2_buffer_head **bh, int h,
+ 			       void *private);
+-	int (*check_data) (struct gfs2_inode *ip, uint64_t block,
+-			   void *private);
++	int (*check_data) (struct gfs2_inode *ip, uint64_t metablock,
++			   uint64_t block, void *private);
+ 	int (*check_eattr_indir) (struct gfs2_inode *ip, uint64_t block,
+ 				  uint64_t parent,
+ 				  struct gfs2_buffer_head **bh, void *private);
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index cdb1b46..a4967a4 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -39,7 +39,8 @@ static int check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 			  struct gfs2_buffer_head **bh, int h, void *private);
+ static int undo_check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 			       int h, void *private);
+-static int check_data(struct gfs2_inode *ip, uint64_t block, void *private);
++static int check_data(struct gfs2_inode *ip, uint64_t metablock,
++		      uint64_t block, void *private);
+ static int undo_check_data(struct gfs2_inode *ip, uint64_t block,
+ 			   void *private);
+ static int check_eattr_indir(struct gfs2_inode *ip, uint64_t indirect,
+@@ -65,8 +66,8 @@ static int invalidate_metadata(struct gfs2_inode *ip, uint64_t block,
+ 			       void *private);
+ static int invalidate_leaf(struct gfs2_inode *ip, uint64_t block,
+ 			   void *private);
+-static int invalidate_data(struct gfs2_inode *ip, uint64_t block,
+-			   void *private);
++static int invalidate_data(struct gfs2_inode *ip, uint64_t metablock,
++			   uint64_t block, void *private);
+ static int invalidate_eattr_indir(struct gfs2_inode *ip, uint64_t block,
+ 				  uint64_t parent,
+ 				  struct gfs2_buffer_head **bh,
+@@ -381,17 +382,24 @@ static int undo_check_data(struct gfs2_inode *ip, uint64_t block,
+ 	return undo_reference(ip, block, 0, private);
+ }
+ 
+-static int check_data(struct gfs2_inode *ip, uint64_t block, void *private)
++static int check_data(struct gfs2_inode *ip, uint64_t metablock,
++		      uint64_t block, void *private)
+ {
+ 	uint8_t q;
+ 	struct block_count *bc = (struct block_count *) private;
+ 
+ 	if (!valid_block(ip->i_sbd, block)) {
+ 		log_err( _("inode %lld (0x%llx) has a bad data block pointer "
+-			   "%lld (invalid or out of range)\n"),
++			   "%lld (0x%llx) (invalid or out of range) "),
+ 			 (unsigned long long)ip->i_di.di_num.no_addr,
+ 			 (unsigned long long)ip->i_di.di_num.no_addr,
+-			 (unsigned long long)block);
++			 (unsigned long long)block, (unsigned long long)block);
++		if (metablock == ip->i_di.di_num.no_addr)
++			log_err("\n");
++		else
++			log_err(_("from metadata block %llu (0x%llx)\n"),
++				(unsigned long long)metablock,
++				(unsigned long long)metablock);
+ 		/* Mark the owner of this block with the bad_block
+ 		 * designator so we know to check it for out of range
+ 		 * blocks later */
+@@ -404,12 +412,19 @@ static int check_data(struct gfs2_inode *ip, uint64_t block, void *private)
+ 	q = block_type(block);
+ 	if (q != gfs2_block_free) {
+ 		log_err( _("Found duplicate %s block %llu (0x%llx) "
+-			   "referenced as data by dinode %llu (0x%llx)\n"),
++			   "referenced as data by dinode %llu (0x%llx) "),
+ 			 block_type_string(q),
+ 			 (unsigned long long)block,
+ 			 (unsigned long long)block,
+ 			 (unsigned long long)ip->i_di.di_num.no_addr,
+ 			 (unsigned long long)ip->i_di.di_num.no_addr);
++		if (metablock == ip->i_di.di_num.no_addr)
++			log_err("\n");
++		else
++			log_err(_("from metadata block %llu (0x%llx)\n"),
++				(unsigned long long)metablock,
++				(unsigned long long)metablock);
++
+ 		if (q != gfs2_meta_inval) {
+ 			log_info( _("Seems to be a normal duplicate; I'll "
+ 				    "sort it out in pass1b.\n"));
+@@ -836,8 +851,8 @@ static int invalidate_leaf(struct gfs2_inode *ip, uint64_t block,
+ 	return mark_block_invalid(ip, block, ref_as_meta, _("leaf"));
+ }
+ 
+-static int invalidate_data(struct gfs2_inode *ip, uint64_t block,
+-			   void *private)
++static int invalidate_data(struct gfs2_inode *ip, uint64_t metablock,
++			   uint64_t block, void *private)
+ {
+ 	return mark_block_invalid(ip, block, ref_as_data, _("data"));
+ }
+@@ -925,8 +940,8 @@ static int rangecheck_leaf(struct gfs2_inode *ip, uint64_t block,
+ 	return rangecheck_block(ip, block, NULL, btype_leaf, private);
+ }
+ 
+-static int rangecheck_data(struct gfs2_inode *ip, uint64_t block,
+-			   void *private)
++static int rangecheck_data(struct gfs2_inode *ip, uint64_t metablock,
++			   uint64_t block, void *private)
+ {
+ 	return rangecheck_block(ip, block, NULL, btype_data, private);
+ }
+diff --git a/gfs2/fsck/pass1b.c b/gfs2/fsck/pass1b.c
+index 838b75e..d873aa6 100644
+--- a/gfs2/fsck/pass1b.c
++++ b/gfs2/fsck/pass1b.c
+@@ -29,7 +29,8 @@ struct dup_handler {
+ static int check_leaf(struct gfs2_inode *ip, uint64_t block, void *private);
+ static int check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 			  struct gfs2_buffer_head **bh, int h, void *private);
+-static int check_data(struct gfs2_inode *ip, uint64_t block, void *private);
++static int check_data(struct gfs2_inode *ip, uint64_t metablock,
++		      uint64_t block, void *private);
+ static int check_eattr_indir(struct gfs2_inode *ip, uint64_t block,
+ 			     uint64_t parent, struct gfs2_buffer_head **bh,
+ 			     void *private);
+@@ -86,7 +87,8 @@ static int check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 	return add_duplicate_ref(ip, block, ref_as_meta, 1, INODE_VALID);
+ }
+ 
+-static int check_data(struct gfs2_inode *ip, uint64_t block, void *private)
++static int check_data(struct gfs2_inode *ip, uint64_t metablock,
++		      uint64_t block, void *private)
+ {
+ 	return add_duplicate_ref(ip, block, ref_as_data, 1, INODE_VALID);
+ }
+@@ -252,7 +254,8 @@ static int clear_dup_metalist(struct gfs2_inode *ip, uint64_t block,
+ 	return 1;
+ }
+ 
+-static int clear_dup_data(struct gfs2_inode *ip, uint64_t block, void *private)
++static int clear_dup_data(struct gfs2_inode *ip, uint64_t metablock,
++			  uint64_t block, void *private)
+ {
+ 	return clear_dup_metalist(ip, block, NULL, 0, private);
+ }

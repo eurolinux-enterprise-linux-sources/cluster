@@ -1,0 +1,125 @@
+commit 05bc9dc0345966bfbc6ade0ea9520206379d0068
+Author: Christine Caulfield <ccaulfie@redhat.com>
+Date:   Fri Jan 11 13:41:15 2013 +0000
+
+    cman|fenced: Fix node killing in case of a 2node cluster that suffers brief network out
+    
+    This patch fixes a rare but nasty condition in cman and fenced. In a 2node cluster
+    if the network splits for a period of time longer than the token timeout but
+    shorter than the time needed to fence a node then both nodes can send 'kill'
+    packets to the other with the effect that both nodes' cmans will quit
+    leaving no operational cluster.
+    
+    This patch adds a check for a 2node cluster and only sends a 'kill' packet
+    to the node with the higher nodeid thus ensuring a predictable response
+    to such events and ensuring that services can continue to run.
+    
+    The cman part of this patch is only active if Disallowed is enabled,
+    which is rare; the fenced part is more likely to be invoked
+    
+    rhbz#893925
+    
+    Signed-off-by: David Teigland <teigland@redhat.com>
+    Signed-off-by: Christine Caulfield <ccaulfie@redhat.com>
+    Acked-By: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/cman/daemon/commands.c b/cman/daemon/commands.c
+index 83a2f4a..f8f8114 100644
+--- a/cman/daemon/commands.c
++++ b/cman/daemon/commands.c
+@@ -2059,9 +2059,28 @@ static void do_process_transition(int nodeid, char *data)
+ 			/* Don't duplicate messages */
+ 			if (node->state != NODESTATE_AISONLY) {
+ 				if (cluster_is_quorate) {
+-					log_printf(LOG_CRIT, "Killing node %s because it has rejoined the cluster with existing state", node->name);
+ 					node->state = NODESTATE_AISONLY;
+-					send_kill(nodeid, CLUSTER_KILL_REJOIN);
++
++					/* Oh, this gets even more complicated. Don't send a KILL message if we are in a two_node
++					 * cluster and that node has a lower node ID than us.
++					 * This allows fencing time to startup and caters for the situation where
++					 * a node rejoins REALLY quickly, before fencing has had time to work.
++					 * I've split this up a bit partly for clarity, but mainly so allow us to
++					 * print out helpful messages as to what we are up to here.
++					 */
++					if (two_node) {
++						if (node->node_id > us->node_id) {
++							log_printf(LOG_CRIT, "Killing node %s because it has rejoined the cluster with existing state and has higher node ID", node->name);
++							send_kill(nodeid, CLUSTER_KILL_REJOIN);
++						}
++						else {
++							log_printf(LOG_CRIT, "Not killing node %s despite it rejoining the cluster with existing state, it has a lower node ID", node->name);
++						}
++					}
++					else {
++						log_printf(LOG_CRIT, "Killing node %s because it has rejoined the cluster with existing state", node->name);
++						send_kill(nodeid, CLUSTER_KILL_REJOIN);
++					}
+ 				}
+ 				else {
+ 					log_printf(LOG_CRIT, "Node %s not joined to cman because it has existing state", node->name);
+diff --git a/fence/fenced/config.c b/fence/fenced/config.c
+index 66610ef..651ea8b 100644
+--- a/fence/fenced/config.c
++++ b/fence/fenced/config.c
+@@ -95,6 +95,7 @@ void read_ccs_int(const char *path, int *config_val)
+ #define OVERRIDE_PATH_PATH "/cluster/fence_daemon/@override_path"
+ #define OVERRIDE_TIME_PATH "/cluster/fence_daemon/@override_time"
+ #define METHOD_NAME_PATH "/cluster/clusternodes/clusternode[@name=\"%s\"]/fence/method[%d]/@name"
++#define TWO_NODE_PATH "/cluster/cman/two_node"
+ 
+ static int count_methods(char *victim)
+ {
+@@ -139,6 +140,8 @@ int read_ccs(struct fd *fd)
+ 	if (!optd_clean_start)
+ 		read_ccs_int(CLEAN_START_PATH, &cfgd_clean_start);
+ 
++	read_ccs_int(TWO_NODE_PATH, &two_node_mode);
++
+ 	reread_ccs();
+ 
+ 	if (!optd_override_path) {
+diff --git a/fence/fenced/fd.h b/fence/fenced/fd.h
+index 205836c..34a6c7f 100644
+--- a/fence/fenced/fd.h
++++ b/fence/fenced/fd.h
+@@ -75,6 +75,7 @@ extern char dump_buf[FENCED_DUMP_SIZE];
+ extern int dump_point;
+ extern int dump_wrap;
+ extern int group_mode;
++extern int two_node_mode;
+ 
+ extern void daemon_dump_save(void);
+ 
+diff --git a/fence/fenced/main.c b/fence/fenced/main.c
+index 8e4f10b..924b8c9 100644
+--- a/fence/fenced/main.c
++++ b/fence/fenced/main.c
+@@ -1101,4 +1101,5 @@ char dump_buf[FENCED_DUMP_SIZE];
+ int dump_point;
+ int dump_wrap;
+ int group_mode;
++int two_node_mode;
+ 
+diff --git a/fence/fenced/member_cman.c b/fence/fenced/member_cman.c
+index a7f4341..ced4272 100644
+--- a/fence/fenced/member_cman.c
++++ b/fence/fenced/member_cman.c
+@@ -32,6 +32,17 @@ void kick_node_from_cluster(int nodeid)
+ 		log_error("telling cman to shut down cluster locally");
+ 		cman_shutdown(ch_admin, CMAN_SHUTDOWN_ANYWAY);
+ 	} else {
++
++		/* in a two_node cluster where both nodes maintain quorum
++		 * by themselves during a partition+merge, both will kick
++		 * the other, which can leave both dead and unfenced.
++		 * this delay should help */
++
++		if (two_node_mode && our_nodeid > nodeid) {
++			log_debug("kick_node_from_cluster %d delay", nodeid);
++			sleep(5);
++		}
++
+ 		log_error("telling cman to remove nodeid %d from cluster",
+ 			  nodeid);
+ 		cman_kill_node(ch_admin, nodeid);

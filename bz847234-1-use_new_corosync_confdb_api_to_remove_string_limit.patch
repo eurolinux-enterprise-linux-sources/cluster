@@ -1,0 +1,345 @@
+commit 21548c1fde6ccfd160484b72bb75eb98b17f4835
+Author: Christine Caulfield <ccaulfie@redhat.com>
+Date:   Tue Aug 14 09:13:06 2012 +0100
+
+    Use new corosync confdb API to remove string limit.
+    
+    The original corosync confdb API had a 256 byte limit on all
+    value strings returned. A new API was added that did not have this
+    restriction, and this commit cases (mainly) libccs and others to
+    use it so those benefits can be passed down to other cluster
+    services.
+    
+    This means that cluster will now only compile against
+    corosync libraries that have the *_typed2 API calls.
+    
+    Resolves: rhbz#847234
+    
+    Signed-off-by: Christine Caulfield <ccaulfie@redhat.com>
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/cman/cman_tool/main.c b/cman/cman_tool/main.c
+index c3d1863..958c35b 100644
+--- a/cman/cman_tool/main.c
++++ b/cman/cman_tool/main.c
+@@ -700,9 +700,9 @@ static int get_config_variables(commandline_t *comline, char **config_modules)
+ 	int res;
+ 	int got_iface = 1;
+ 	char key_name[1024];
+-	size_t key_name_len;
+-	char key_value[1024];
++	char *key_value = NULL;
+ 	size_t key_value_len;
++	confdb_value_types_t type;
+ 	hdb_handle_t confdb_handle;
+ 	hdb_handle_t cmanp_handle;
+ 	confdb_callbacks_t callbacks = {
+@@ -728,9 +728,8 @@ static int get_config_variables(commandline_t *comline, char **config_modules)
+ 	if (res != CS_OK)
+ 		goto finish;
+ 
+-	while ( (res = confdb_key_iter(confdb_handle, cmanp_handle, key_name, &key_name_len,
+-				       key_value, &key_value_len)) == CS_OK) {
+-		key_name[key_name_len] = '\0';
++	while ( (res = confdb_key_iter_typed2(confdb_handle, cmanp_handle, key_name,
++					      (void**)&key_value, &key_value_len, &type)) == CS_OK) {
+ 		key_value[key_value_len] = '\0';
+ 
+ 		setenv(key_name, key_value, 1);
+@@ -738,6 +737,8 @@ static int get_config_variables(commandline_t *comline, char **config_modules)
+ 			*config_modules = strdup(key_value);
+ 			got_iface = 0;
+ 		}
++		free(key_value);
++		key_value = NULL;
+ 	}
+ 
+ finish:
+diff --git a/config/libs/libccsconfdb/fullxpath.c b/config/libs/libccsconfdb/fullxpath.c
+index 577c74a..86d4f59 100644
+--- a/config/libs/libccsconfdb/fullxpath.c
++++ b/config/libs/libccsconfdb/fullxpath.c
+@@ -52,8 +52,9 @@ static int dump_objdb_buff(confdb_handle_t dump_handle, hdb_handle_t cluster_han
+ 	char temp[PATH_MAX];
+ 	char object_name[PATH_MAX];
+ 	char key_name[PATH_MAX];
+-	char key_value[PATH_MAX];
+-	size_t key_value_len = 0, key_name_len = 0, object_name_len = 0;
++	char *key_value = NULL;
++	size_t key_value_len = 0, object_name_len = 0;
++	confdb_value_types_t type;
+ 	int res;
+ 
+ 	res = confdb_key_iter_start(dump_handle, parent_object_handle);
+@@ -70,16 +71,17 @@ static int dump_objdb_buff(confdb_handle_t dump_handle, hdb_handle_t cluster_han
+ 	}
+ 
+ 	while ((res =
+-		confdb_key_iter(dump_handle, parent_object_handle, key_name,
+-				&key_name_len, key_value,
+-				&key_value_len)) == CS_OK) {
++		confdb_key_iter_typed2(dump_handle, parent_object_handle, key_name,
++				       (void **)&key_value,
++				       &key_value_len, &type)) == CS_OK) {
+ 		int char_pos = 0;
+-		key_name[key_name_len] = '\0';
+ 		key_value[key_value_len] = '\0';
+ 
+ 		snprintf(temp, PATH_MAX - 1, " %s=\"", key_name);
+-		if (add_to_buffer(temp, buffer, bufsize))
++		if (add_to_buffer(temp, buffer, bufsize)) {
++			free(key_value);
+ 			return -1;
++		}
+ 
+ 		for (char_pos = 0; char_pos < key_value_len-1; char_pos++) {
+ 			switch (key_value[char_pos]) {
+@@ -104,9 +106,13 @@ static int dump_objdb_buff(confdb_handle_t dump_handle, hdb_handle_t cluster_han
+ 				temp[1] = '\0';
+ 				break;
+ 			}
+-			if (add_to_buffer(temp, buffer, bufsize))
++			if (add_to_buffer(temp, buffer, bufsize)) {
++				free(key_value);
+ 				return -1;
++			}
+ 		}
++		free(key_value);
++		key_value = NULL;
+ 
+ 		snprintf(temp, PATH_MAX - 1, "\"");
+ 		if (add_to_buffer(temp, buffer, bufsize))
+diff --git a/config/libs/libccsconfdb/xpathlite.c b/config/libs/libccsconfdb/xpathlite.c
+index 0a21f85..75c33bc 100644
+--- a/config/libs/libccsconfdb/xpathlite.c
++++ b/config/libs/libccsconfdb/xpathlite.c
+@@ -59,6 +59,7 @@ static int path_dive(confdb_handle_t handle, hdb_handle_t *query_handle,
+ 	char *pos = NULL, *next = NULL;
+ 	int i;
+ 	hdb_handle_t new_obj_handle;
++	confdb_value_types_t type;
+ 
+ 	pos = current_query + 1;
+ 
+@@ -88,6 +89,8 @@ static int path_dive(confdb_handle_t handle, hdb_handle_t *query_handle,
+ 			 */
+ 
+ 			char *start = NULL, *middle = NULL, *end = NULL;
++			char *key_value = NULL;
++			size_t valuelen;
+ 			char data[PATH_MAX];
+ 			size_t datalen = 0;
+ 
+@@ -191,17 +194,22 @@ static int path_dive(confdb_handle_t handle, hdb_handle_t *query_handle,
+ 					     &new_obj_handle) != CS_OK)
+ 						goto fail;
+ 					else {
+-						if (confdb_key_get
++						key_value = NULL;
++						if (confdb_key_get_typed2
+ 						    (handle, new_obj_handle,
+-						     middle, strlen(middle),
+-						     data,
+-						     &datalen) == CS_OK) {
++						     middle,
++						     (void **) &key_value,
++						     &valuelen, &type) == CS_OK) {
+ 							if (!strcmp
+-							    (data, value))
++							    (key_value, value))
+ 								goout = 1;
++							free(key_value);
++							key_value = NULL;
+ 						}
+ 					}
+ 				}
++				free(key_value);
++				key_value = NULL;
+ 				confdb_object_find_destroy(handle,
+ 							   *query_handle);
+ 				*query_handle = new_obj_handle;
+@@ -224,15 +232,14 @@ static int get_data(confdb_handle_t handle, hdb_handle_t connection_handle,
+ {
+ 	int cmp;
+ 	char data[PATH_MAX];
+-	char resval[PATH_MAX];
+-	char keyval[PATH_MAX];
++	char *resval;
++	char *keyval;
+ 	hdb_handle_t new_obj_handle;
+ 	unsigned int value = 0;
++	confdb_value_types_t type;
+ 	size_t datalen = 0, keyvallen = PATH_MAX;
+ 
+ 	memset(data, 0, PATH_MAX);
+-	memset(resval, 0, PATH_MAX);
+-	memset(keyval, 0, PATH_MAX);
+ 
+ 	// we need to handle child::*[int value] in non list mode.
+ 	cmp = strcmp(curpos, "child::*");
+@@ -283,8 +290,11 @@ static int get_data(confdb_handle_t handle, hdb_handle_t connection_handle,
+ 			value--;
+ 		}
+ 
+-		snprintf(resval, sizeof(resval), "%s=%s", data, keyval);
+-		*rtn = strndup(resval, datalen + keyvallen + 2);
++		resval = malloc(datalen + keyvallen + 2);
++		if (!resval)
++			goto fail;
++		snprintf(resval, datalen + keyvallen + 2, "%s=%s", data, keyval);
++		*rtn = resval;
+ 
+ 	} else if (!strncmp(curpos, "@*", strlen("@*"))) {
+ 
+@@ -304,18 +314,24 @@ static int get_data(confdb_handle_t handle, hdb_handle_t connection_handle,
+ 
+ 		while (value != 0) {
+ 			memset(data, 0, PATH_MAX);
+-			if (confdb_key_iter
+-			    (handle, query_handle, data, &datalen, keyval,
+-			     &keyvallen) != CS_OK) {
++			keyval = NULL;
++			if (confdb_key_iter_typed2
++			    (handle, query_handle, data, (void **)&keyval,
++			     &keyvallen, &type) != CS_OK) {
+ 				reset_iterator(handle, connection_handle);
+ 				goto fail;
+ 			}
+ 
+ 			value--;
++			if (value != 0)
++				free(keyval);
+ 		}
+-
+-		snprintf(resval, sizeof(resval), "%s=%s", data, keyval);
+-		*rtn = strndup(resval, datalen + keyvallen + 2);
++		resval = malloc(datalen + keyvallen + 2);
++		if (!resval)
++			goto fail;
++		snprintf(resval, datalen + keyvallen + 2, "%s=%s", data, keyval);
++		*rtn = resval;
++		free(keyval);
+ 
+ 	} else {		/* pure data request */
+ 		char *query;
+@@ -333,12 +349,13 @@ static int get_data(confdb_handle_t handle, hdb_handle_t connection_handle,
+ 
+ 		query = query + 1;
+ 
+-		if (confdb_key_get
+-		    (handle, query_handle, query, strlen(query), data,
+-		     &datalen) != CS_OK)
++		keyval = NULL;
++		if (confdb_key_get_typed2
++		    (handle, query_handle, query, (void **)&keyval,
++		     &keyvallen, &type) != CS_OK)
+ 			goto fail;
+ 
+-		*rtn = strndup(data, datalen);
++		*rtn = keyval;
+ 	}
+ 
+ 	return 0;
+diff --git a/config/tools/ldap/confdb2ldif.c b/config/tools/ldap/confdb2ldif.c
+index 35f8c31..6891f27 100644
+--- a/config/tools/ldap/confdb2ldif.c
++++ b/config/tools/ldap/confdb2ldif.c
+@@ -41,8 +41,8 @@ static void print_config_tree(confdb_handle_t handle, hdb_handle_t parent_object
+ 	char object_name[1024];
+ 	size_t object_name_len;
+ 	char key_name[1024];
+-	size_t key_name_len;
+-	char key_value[1024];
++	char *key_value=NULL;
++	confdb_value_types_t type;
+ 	size_t key_value_len;
+ 	char cumulative_dn[4096];
+ 	int res;
+@@ -57,13 +57,14 @@ static void print_config_tree(confdb_handle_t handle, hdb_handle_t parent_object
+ 		return;
+ 	}
+ 
+-	while ( (res = confdb_key_iter(handle, parent_object_handle, key_name, &key_name_len,
+-				       key_value, &key_value_len)) == CS_OK) {
+-		key_name[key_name_len] = '\0';
++	while ( (res = confdb_key_iter_typed2(handle, parent_object_handle, key_name,
++					      (void**)&key_value, &key_value_len, &type)) == CS_OK) {
+ 		key_value[key_value_len] = '\0';
+ 
+ 		printf("%s: %s\n", ldap_attr_name(key_name), key_value);
+ 		keycount++;
++		free(key_value);
++		key_value=NULL;
+ 	}
+ 	if (strncmp(fulldn, "cn=", 3) == 0) {
+ 		printf("cn: %s\n", dn);
+@@ -97,15 +98,16 @@ static void print_config_tree(confdb_handle_t handle, hdb_handle_t parent_object
+ 		object_name[object_name_len] = '\0';
+ 
+ 		/* Check for "name", and create dummy parent object */
+-		res = confdb_key_get(handle, object_handle, "name", strlen("name"), key_value, &key_value_len);
++		res = confdb_key_get_typed2(handle, object_handle, "name",  (void **)&key_value, &key_value_len, &type);
+ 		if (res == CS_OK) {
+ 			sprintf(cumulative_dn, "cn=%s,%s", object_name, fulldn);
+ 			printf("\n");
+ 			printf("dn: %s\n", cumulative_dn);
+ 			printf("cn: %s\n", object_name);
+ 			printf("objectclass: %s\n", "nsContainer");
+-
+-			sprintf(cumulative_dn, "name=%s,cn=%s,%s", key_value, object_name, fulldn);
++			snprintf(cumulative_dn, sizeof(cumulative_dn) - 1, "name=%s,cn=%s,%s", key_value, object_name, fulldn);
++			free(key_value);
++			key_value = NULL;
+ 		}
+ 		else {
+ 			sprintf(cumulative_dn, "cn=%s,%s", object_name, fulldn);
+diff --git a/config/tools/xml/ccs_config_dump.c b/config/tools/xml/ccs_config_dump.c
+index 74c33c2..1264aa3 100644
+--- a/config/tools/xml/ccs_config_dump.c
++++ b/config/tools/xml/ccs_config_dump.c
+@@ -14,20 +14,21 @@ static int dump_objdb_buff(confdb_handle_t dump_handle, hdb_handle_t cluster_han
+ 			   hdb_handle_t parent_object_handle, int level)
+ {
+ 	hdb_handle_t object_handle;
+-	char object_name[PATH_MAX], key_name[PATH_MAX], key_value[PATH_MAX];
+-	size_t key_value_len = 0, key_name_len = 0, object_name_len = 0;
++	char object_name[PATH_MAX], key_name[PATH_MAX];
++	char *key_value=NULL;
++	size_t key_value_len = 0, object_name_len = 0;
+ 	int current_level = level+1;
+ 	int has_children = 0;
++	confdb_value_types_t type;
+ 
+ 	if (confdb_key_iter_start(dump_handle, parent_object_handle) != CS_OK)
+ 		return -1;
+ 
+-	while (confdb_key_iter(dump_handle, parent_object_handle, key_name,
+-				&key_name_len, key_value,
+-				&key_value_len) == CS_OK) {
++	while (confdb_key_iter_typed2(dump_handle, parent_object_handle, key_name,
++				      (void**)&key_value,
++				      &key_value_len, &type) == CS_OK) {
+ 		int char_pos = 0;
+ 
+-		key_name[key_name_len] = '\0';
+ 		key_value[key_value_len] = '\0';
+ 		printf(" %s=\"", key_name);
+ 		for (char_pos = 0; char_pos < key_value_len-1; char_pos++) {
+@@ -54,6 +55,8 @@ static int dump_objdb_buff(confdb_handle_t dump_handle, hdb_handle_t cluster_han
+ 			}
+ 		}
+ 		printf("\"");
++		free(key_value);
++		key_value = NULL;
+ 	}
+ 
+ 	if (confdb_object_iter_start(dump_handle, parent_object_handle) != CS_OK)
+@@ -61,7 +64,7 @@ static int dump_objdb_buff(confdb_handle_t dump_handle, hdb_handle_t cluster_han
+ 
+ 	while (confdb_object_iter(dump_handle, parent_object_handle,
+ 				   &object_handle, object_name,
+-				   &object_name_len) == CS_OK) {
++					 &object_name_len) == CS_OK) {
+ 		hdb_handle_t parent;
+ 		int i;
+ 		int found_children;

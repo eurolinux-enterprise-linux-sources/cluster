@@ -1,0 +1,77 @@
+commit 037d87223adc6cd056c91e2b2bc6bdde5078528c
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Mon Feb 25 13:07:19 2013 -0700
+
+    fsck.gfs2: Move function to read directory hash table to util.c
+    
+    This patch moves function get_dir_hash from metawalk.c to util.c.
+    This was done because a future patch will need access to the function.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index d5d518a..4164722 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -641,24 +641,6 @@ out_copy_old_leaf:
+ 	return 1;
+ }
+ 
+-static uint64_t *get_dir_hash(struct gfs2_inode *ip)
+-{
+-	unsigned hsize = (1 << ip->i_di.di_depth) * sizeof(uint64_t);
+-	int ret;
+-	uint64_t *tbl = malloc(hsize);
+-
+-	if (tbl == NULL)
+-		return NULL;
+-
+-	ret = gfs2_readi(ip, tbl, 0, hsize);
+-	if (ret != hsize) {
+-		free(tbl);
+-		return NULL;
+-	}
+-
+-	return tbl;
+-}
+-
+ static int u64cmp(const void *p1, const void *p2)
+ {
+ 	uint64_t a = *(uint64_t *)p1;
+diff --git a/gfs2/fsck/util.c b/gfs2/fsck/util.c
+index 5e14dd4..cfcb701 100644
+--- a/gfs2/fsck/util.c
++++ b/gfs2/fsck/util.c
+@@ -571,3 +571,22 @@ uint64_t find_free_blk(struct gfs2_sbd *sdp)
+ 	}
+ 	return 0;
+ }
++
++uint64_t *get_dir_hash(struct gfs2_inode *ip)
++{
++	unsigned hsize = (1 << ip->i_di.di_depth) * sizeof(uint64_t);
++	int ret;
++	uint64_t *tbl = malloc(hsize);
++
++	if (tbl == NULL)
++		return NULL;
++
++	ret = gfs2_readi(ip, tbl, 0, hsize);
++	if (ret != hsize) {
++		free(tbl);
++		return NULL;
++	}
++
++	return tbl;
++}
++
+diff --git a/gfs2/fsck/util.h b/gfs2/fsck/util.h
+index 5ee38ad..3f15fca 100644
+--- a/gfs2/fsck/util.h
++++ b/gfs2/fsck/util.h
+@@ -181,4 +181,5 @@ extern int gfs2_blockmap_set(struct gfs2_bmap *il, uint64_t block,
+ 			     enum gfs2_mark_block mark);
+ extern int set_ip_blockmap(struct gfs2_inode *ip, int instree);
+ extern uint64_t find_free_blk(struct gfs2_sbd *sdp);
++extern uint64_t *get_dir_hash(struct gfs2_inode *ip);
+ #endif /* __UTIL_H__ */

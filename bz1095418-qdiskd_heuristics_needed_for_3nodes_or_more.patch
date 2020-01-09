@@ -1,0 +1,18 @@
+--- a/cman/qdisk/main.c	
++++ a/cman/qdisk/main.c	
+@@ -1959,6 +1959,15 @@ get_config_data(qd_ctx *ctx, struct h_data *h, int maxh, int *cfh)
+ 				   "simple two-node cluster\n");
+ 		}
+ 	}
++	if (!(*cfh) && ctx->qc_auto_votes > 1) {
++		/*
++		 * Heuristics must be defined for >2 node clusters
++		 */
++		logt_print(LOG_CRIT, "No heuristics have been defined for this cluster\n");
++		logt_print(LOG_CRIT, "Clusters of more than 2 nodes using qdisk must have heuristics\n");
++		ret = -1;
++		goto out;
++	}
+ 
+ 	ret = 0;
+ 

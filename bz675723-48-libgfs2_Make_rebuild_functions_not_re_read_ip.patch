@@ -1,0 +1,152 @@
+commit 07afbc65f31ec524396cc5beb3ca421330e9bbaf
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Fri Jan 6 13:55:38 2012 -0600
+
+    libgfs2: Make rebuild functions not re-read ip
+    
+    Before this patch, the libgfs2 rebuild functions in structures.c
+    were not consistent about reading in the gfs2_inode in-core struct.
+    Some of the functions did and some didn't.  The previous patch to
+    make fsck.gfs2 operate on gfs1 introduced a problem because the code
+    was changed to re-read the inum and statfs files if they were rebuilt.
+    But since the functions already did the read, it was a double-read.
+    A double-read is a bad thing because inode writes are now done on
+    the last inode put, and the double-read messed up the counter.
+    (Number of inode gets should match puts).  This patch makes all the
+    build functions consistent: they all put the inode after building,
+    except for root and master which have no parent inodes.
+    
+    There was also a minor problem whereby leaf searches were getting
+    the number of entries from the directory buffer rather than from
+    the dinode itself.  (The buffer may be out of date, but the dinode
+    should always be current).  So there were circumstances where you
+    could add a new dirent to "master" but the count of entries was not
+    correct in the buffer, which caused the search to stop prematurely.
+    
+    rhbz#675723
+
+diff --git a/gfs2/convert/gfs2_convert.c b/gfs2/convert/gfs2_convert.c
+index 9cc3258..43d0093 100644
+--- a/gfs2/convert/gfs2_convert.c
++++ b/gfs2/convert/gfs2_convert.c
+@@ -2158,9 +2158,12 @@ int main(int argc, char **argv)
+ 		build_per_node(&sb2);
+ 		/* Create the empty inode number file */
+ 		build_inum(&sb2); /* Does not do inode_put */
++		gfs2_lookupi(sb2.master_dir, "inum", 4, &sb2.md.inum);
+ 		/* Create the statfs file */
+ 		build_statfs(&sb2); /* Does not do inode_put */
+ 
++		gfs2_lookupi(sb2.master_dir, "statfs", 6, &sb2.md.statfs);
++		do_init_statfs(&sb2);
+ 		/* Create the resource group index file */
+ 		build_rindex(&sb2);
+ 		/* Create the quota file */
+diff --git a/gfs2/fsck/initialize.c b/gfs2/fsck/initialize.c
+index cee1f49..75b363b 100644
+--- a/gfs2/fsck/initialize.c
++++ b/gfs2/fsck/initialize.c
+@@ -392,6 +392,7 @@ static int rebuild_master(struct gfs2_sbd *sdp)
+ 			IF2DT(S_IFREG | 0600));
+ 	} else {
+ 		build_inum(sdp);
++		gfs2_lookupi(sdp->master_dir, "inum", 4, &sdp->md.inum);
+ 	}
+ 
+ 	if (fix_md.statfs) {
+@@ -401,6 +402,7 @@ static int rebuild_master(struct gfs2_sbd *sdp)
+ 			IF2DT(S_IFREG | 0600));
+ 	} else {
+ 		build_statfs(sdp);
++		gfs2_lookupi(sdp->master_dir, "statfs", 6, &sdp->md.statfs);
+ 	}
+ 
+ 	if (fix_md.riinode) {
+@@ -422,6 +424,8 @@ static int rebuild_master(struct gfs2_sbd *sdp)
+ 	}
+ 
+ 	log_err(_("Master directory rebuilt.\n"));
++	inode_put(&sdp->md.inum);
++	inode_put(&sdp->md.statfs);
+ 	inode_put(&sdp->master_dir);
+ 	return 0;
+ }
+@@ -635,6 +639,7 @@ static int init_system_inodes(struct gfs2_sbd *sdp)
+ 				   "a valid statfs file; aborting.\n"));
+ 			goto fail;
+ 		}
++		do_init_statfs(sdp);
+ 	}
+ 	buf = malloc(sdp->md.statfs->i_di.di_size);
+ 	// FIXME: handle failed malloc
+diff --git a/gfs2/libgfs2/fs_ops.c b/gfs2/libgfs2/fs_ops.c
+index e99cc2a..0163371 100644
+--- a/gfs2/libgfs2/fs_ops.c
++++ b/gfs2/libgfs2/fs_ops.c
+@@ -1243,6 +1243,7 @@ static void dir_l_add(struct gfs2_inode *dip, const char *filename, int len,
+ 	dent->de_hash = cpu_to_be32(dent->de_hash);
+ 	dent->de_type = cpu_to_be16(type);
+ 	memcpy((char *)(dent + 1), filename, len);
++	bmodified(dip->i_bh);
+ }
+ 
+ void dir_add(struct gfs2_inode *dip, const char *filename, int len,
+@@ -1437,10 +1438,9 @@ static int leaf_search(struct gfs2_inode *dip, struct gfs2_buffer_head *bh,
+ 	if (type == IS_LEAF){
+ 		struct gfs2_leaf *leaf = (struct gfs2_leaf *)bh->b_data;
+ 		entries = be16_to_cpu(leaf->lf_entries);
+-	} else if (type == IS_DINODE) {
+-		struct gfs2_dinode *dinode = (struct gfs2_dinode *)bh->b_data;
+-		entries = be32_to_cpu(dinode->di_entries);
+-	} else
++	} else if (type == IS_DINODE)
++		entries = dip->i_di.di_entries;
++	else
+ 		return -1;
+ 
+ 	hash = gfs2_disk_hash(filename, len);
+@@ -1453,7 +1453,7 @@ static int leaf_search(struct gfs2_inode *dip, struct gfs2_buffer_head *bh,
+ 		
+ 		if (be32_to_cpu(dent->de_hash) == hash &&
+ 			gfs2_filecmp(filename, (char *)(dent + 1),
+-						 be16_to_cpu(dent->de_name_len))){
++				     be16_to_cpu(dent->de_name_len))) {
+ 			*dent_out = dent;
+ 			if (dent_prev)
+ 				*dent_prev = prev;
+diff --git a/gfs2/libgfs2/structures.c b/gfs2/libgfs2/structures.c
+index f53b4af..b998f2d 100644
+--- a/gfs2/libgfs2/structures.c
++++ b/gfs2/libgfs2/structures.c
+@@ -284,7 +284,7 @@ int build_inum(struct gfs2_sbd *sdp)
+ 		gfs2_dinode_print(&ip->i_di);
+ 	}
+ 
+-	sdp->md.inum = ip;
++	inode_put(&ip);
+ 	return 0;
+ }
+ 
+@@ -300,7 +300,7 @@ int build_statfs(struct gfs2_sbd *sdp)
+ 		gfs2_dinode_print(&ip->i_di);
+ 	}
+ 
+-	sdp->md.statfs = ip;
++	inode_put(&ip);
+ 	return 0;
+ }
+ 
+diff --git a/gfs2/mkfs/main_mkfs.c b/gfs2/mkfs/main_mkfs.c
+index 3db3b14..ee2a5da 100644
+--- a/gfs2/mkfs/main_mkfs.c
++++ b/gfs2/mkfs/main_mkfs.c
+@@ -650,7 +650,9 @@ void main_mkfs(int argc, char *argv[])
+ 	build_jindex(sdp);
+ 	build_per_node(sdp);
+ 	build_inum(sdp);
++	gfs2_lookupi(sdp->master_dir, "inum", 4, &sdp->md.inum);
+ 	build_statfs(sdp);
++	gfs2_lookupi(sdp->master_dir, "statfs", 6, &sdp->md.statfs);
+ 	build_rindex(sdp);
+ 	build_quota(sdp);
+ 

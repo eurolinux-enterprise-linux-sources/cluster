@@ -1,0 +1,138 @@
+commit 8bd29a4cca3a6c3b210d42c2d1c87bca59d4bcb0
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Wed Aug 10 14:20:11 2011 -0500
+
+    libgfs2: combine ri_update and gfs1_ri_update
+    
+    Since gfs1_ri_update is nearly identical to ri_update, I decided to
+    combine the main logic into a common function.  That simplifies the
+    code and if one gets fixed, they both get fixed automatically.
+    
+    rhbz#675723
+
+diff --git a/gfs2/libgfs2/gfs1.c b/gfs2/libgfs2/gfs1.c
+index 076f4d0..3e314ce 100644
+--- a/gfs2/libgfs2/gfs1.c
++++ b/gfs2/libgfs2/gfs1.c
+@@ -159,55 +159,6 @@ void gfs1_block_map(struct gfs2_inode *ip, uint64_t lblock, int *new,
+ 	free(mp);
+ }
+ 
+-/**
+- * gfs1_ri_update - attach rgrps to the super block
+- *                  Stolen from libgfs2/super.c, but modified to handle gfs1.
+- * @sdp:
+- *
+- * Given the rgrp index inode, link in all rgrps into the super block
+- * and be sure that they can be read.
+- *
+- * Returns: 0 on success, -1 on failure.
+- */
+-int gfs1_ri_update(struct gfs2_sbd *sdp, int fd, int *rgcount, int quiet)
+-{
+-	struct rgrp_list *rgd;
+-	struct gfs2_rindex *ri;
+-	osi_list_t *tmp;
+-	int count1 = 0, count2 = 0;
+-	uint64_t errblock = 0;
+-	uint64_t rmax = 0;
+-	int sane;
+-
+-	if (rindex_read(sdp, fd, &count1, &sane))
+-	    goto fail;
+-	for (tmp = sdp->rglist.next; tmp != &sdp->rglist; tmp = tmp->next) {
+-		rgd = osi_list_entry(tmp, struct rgrp_list, list);
+-		errblock = gfs2_rgrp_read(sdp, rgd);
+-		if (errblock)
+-			return errblock;
+-		count2++;
+-		if (!quiet && count2 % 100 == 0) {
+-			printf(".");
+-			fflush(stdout);
+-		}
+-		ri = &rgd->ri;
+-		if (ri->ri_data0 + ri->ri_data - 1 > rmax)
+-			rmax = ri->ri_data0 + ri->ri_data - 1;
+-	}
+-
+-	sdp->fssize = rmax;
+-	*rgcount = count1;
+-	if (count1 != count2)
+-		goto fail;
+-
+-	return 0;
+-
+- fail:
+-	gfs2_rgrp_free(&sdp->rglist);
+-	return -1;
+-}
+-
+ /* ------------------------------------------------------------------------ */
+ /* gfs_dinode_in */
+ /* ------------------------------------------------------------------------ */
+diff --git a/gfs2/libgfs2/super.c b/gfs2/libgfs2/super.c
+index 0fac740..27f6c2c 100644
+--- a/gfs2/libgfs2/super.c
++++ b/gfs2/libgfs2/super.c
+@@ -223,7 +223,8 @@ int rindex_read(struct gfs2_sbd *sdp, int fd, int *count1, int *sane)
+  *
+  * Returns: 0 on success, -1 on failure.
+  */
+-int ri_update(struct gfs2_sbd *sdp, int fd, int *rgcount, int *sane)
++static int __ri_update(struct gfs2_sbd *sdp, int fd, int *rgcount, int *sane,
++		       int quiet)
+ {
+ 	struct rgrp_list *rgd;
+ 	struct gfs2_rindex *ri;
+@@ -233,16 +234,20 @@ int ri_update(struct gfs2_sbd *sdp, int fd, int *rgcount, int *sane)
+ 	uint64_t rmax = 0;
+ 
+ 	if (rindex_read(sdp, fd, &count1, sane))
+-	    goto fail;
++		goto fail;
+ 	for (tmp = sdp->rglist.next; tmp != &sdp->rglist; tmp = tmp->next) {
+ 		rgd = osi_list_entry(tmp, struct rgrp_list, list);
+ 		errblock = gfs2_rgrp_read(sdp, rgd);
+ 		if (errblock)
+ 			return errblock;
++		count2++;
++		if (!quiet && count2 % 100 == 0) {
++			printf(".");
++			fflush(stdout);
++		}
+ 		ri = &rgd->ri;
+ 		if (ri->ri_data0 + ri->ri_data - 1 > rmax)
+ 			rmax = ri->ri_data0 + ri->ri_data - 1;
+-		count2++;
+ 	}
+ 
+ 	sdp->fssize = rmax;
+@@ -257,6 +262,28 @@ int ri_update(struct gfs2_sbd *sdp, int fd, int *rgcount, int *sane)
+ 	return -1;
+ }
+ 
++int ri_update(struct gfs2_sbd *sdp, int fd, int *rgcount, int *sane)
++{
++	return __ri_update(sdp, fd, rgcount, sane, 1);
++}
++
++/**
++ * gfs1_ri_update - attach rgrps to the super block
++ *                  Stolen from libgfs2/super.c, but modified to handle gfs1.
++ * @sdp:
++ *
++ * Given the rgrp index inode, link in all rgrps into the super block
++ * and be sure that they can be read.
++ *
++ * Returns: 0 on success, -1 on failure.
++ */
++int gfs1_ri_update(struct gfs2_sbd *sdp, int fd, int *rgcount, int quiet)
++{
++	int sane;
++
++	return __ri_update(sdp, fd, rgcount, &sane, quiet);
++}
++
+ int write_sb(struct gfs2_sbd *sbp)
+ {
+ 	struct gfs2_buffer_head *bh;

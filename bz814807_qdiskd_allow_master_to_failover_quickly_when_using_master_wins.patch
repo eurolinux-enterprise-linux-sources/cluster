@@ -1,0 +1,145 @@
+commit 5674e99cd0b141c34630ec411e0d682727a30dc9
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Tue Jul 24 10:27:57 2012 +0200
+
+    qdiskd: allow master to failover quickly when using master_wins
+    
+    in case of master_wins and we are shutting down the master qdiskd,
+    there is a small window in which the other node is not quorate
+    because qdiskd has not become master yet.
+    
+    this patch allows the master qdiskd to communicate to the other
+    nodes that it is going away and gives enough time to elect
+    a new master before dieing.
+    
+    the process itself is safe and the worst case scenario the cluster
+    will behave as-is now (temporary loss of quorum), otherwise a fast
+    switch will take place.
+    
+    Resolves: rhbz#814807
+    
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+    Reviewed-by: Lon Hohberger <lhh@redhat.com>
+
+diff --git a/cman/qdisk/disk.h b/cman/qdisk/disk.h
+index fd80fa6..6bed41d 100644
+--- a/cman/qdisk/disk.h
++++ b/cman/qdisk/disk.h
+@@ -24,9 +24,12 @@ typedef enum {
+ 	S_INIT	= 0x2,		// Initializing.  Hold your fire.
+         /* vvv Fencing will kill a node */
+ 	S_RUN	= 0x5,		// I think I'm running.
+-	S_MASTER= 0x6		// I know I'm running, and have advertised to
++	S_MASTER= 0x6,		// I know I'm running, and have advertised to
+ 				// CMAN the availability of the disk vote for my
+ 				// partition.
++	S_EXIT	= 0x7		// trigger master re-election before exit
++				// status is set only by master in master-win | auto-masterwin
++				// and next status _must_ be S_NONE
+ } disk_node_state_t;
+ 
+ 
+diff --git a/cman/qdisk/main.c b/cman/qdisk/main.c
+index fc714f6..594e9e8 100644
+--- a/cman/qdisk/main.c
++++ b/cman/qdisk/main.c
+@@ -194,7 +194,8 @@ read_node_blocks(qd_ctx *ctx, node_info_t *ni, int max)
+ 			continue;
+ 
+ 		/* Unchanged timestamp: miss */
+-		if (sb->ps_timestamp == ni[x].ni_last_seen) {
++		if ((sb->ps_timestamp == ni[x].ni_last_seen) &&
++		    (ni[x].ni_state != S_EXIT)) {
+ 			/* XXX check for average + allow grace */
+ 			ni[x].ni_misses++;
+ 			if (ni[x].ni_misses > 1) {
+@@ -229,6 +230,22 @@ check_transitions(qd_ctx *ctx, node_info_t *ni, int max, memb_mask_t mask)
+ 	for (x = 0; x < max; x++) {
+ 
+ 		/*
++		   Case 0: check if master node is about to leave
++		 */
++		if (ni[x].ni_state == S_EXIT) {
++			logt_print(LOG_NOTICE, "Node %d is about to leave\n", ni[x].ni_status.ps_nodeid);
++			ni[x].ni_evil_incarnation = 0;
++			ni[x].ni_incarnation = 0;
++			ni[x].ni_seen = 0;
++			ni[x].ni_misses = 0;
++			ni[x].ni_state = S_NONE;
++			if (mask) 
++				clear_bit(mask, (ni[x].ni_status.ps_nodeid-1),
++					  sizeof(memb_mask_t));
++			continue;
++		}
++
++		/*
+ 		   Case 1: check to see if the node is still up
+ 		   according to our internal state, but has been
+ 		   evicted by the master or cleanly shut down
+@@ -1259,6 +1276,50 @@ quorum_loop(qd_ctx *ctx, node_info_t *ni, int max)
+ 
+ 
+ /**
++  Tell the other nodes to elect a new master != me.
++ */
++static int
++quorum_reelect_master(qd_ctx *ctx, node_info_t *ni, int max)
++{
++	if (qd_write_status(ctx, ctx->qc_my_id, S_EXIT,
++			    NULL, NULL, NULL) != 0) {
++		logt_print(LOG_WARNING,
++		       "Error writing to quorum disk during reelect_master\n");
++	}
++
++	while (1) {
++		int master, x;
++		int found = 0;
++		int low_id, count;
++
++		read_node_blocks(ctx, ni, max);
++
++		for (x = 0; x < max; x++) {
++			if (ni[x].ni_state >= S_RUN) {
++				found = 1;
++			}
++		}
++
++		if (!found) {
++			logt_print(LOG_DEBUG, "No other nodes are active. Exiting\n");
++			break;
++		}
++
++		master = master_exists(ctx, ni, max, &low_id, &count);
++		if (master) {
++			logt_print(LOG_DEBUG, "New master elected: %d\n", master);
++			break;
++		}
++		/*
++		 * give time for message to be read
++		 */
++		sleep(1);
++	}
++
++	return 0;
++}
++
++/**
+   Tell the other nodes we're done (safely!).
+  */
+ static int
+@@ -2151,6 +2212,15 @@ main(int argc, char **argv)
+ 	io_nanny_start(ch_user, ctx.qc_tko * ctx.qc_interval);
+ 
+ 	if (quorum_loop(&ctx, ni, MAX_NODES_DISK) == 0) {
++		/*
++		 * if we are master and we are in master-win mode,
++		 * request other qdiskd to elect a new one
++		 */
++		if ((ctx.qc_status == S_MASTER) &&
++		    ((ctx.qc_flags & RF_MASTER_WINS) ||
++		     (ctx.qc_flags & RF_AUTO_MASTER_WINS))) {
++			quorum_reelect_master(&ctx, ni, MAX_NODES_DISK);
++		}
+ 		/* Only clean up if we're exiting w/o error) */
+ 		logt_print(LOG_NOTICE, "Unregistering quorum device.\n");
+ 		cman_unregister_quorum_device(ctx.qc_cman_admin);

@@ -1,0 +1,119 @@
+commit c1421b402bbc86aae0940c05fa5684e46ac93c9c
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Thu Sep 22 10:34:47 2011 +0200
+
+    cman: allow late close of stderr file descriptor and free resources
+    
+    In case debug is enabled, and cman is executed via init script, we leak
+    a fd associated to a file that will grow indefinetely in size.
+    
+    We address this situation by adding a very specific cman_tool startup
+    option associated to init script, to tell cman to perform a late
+    close of stderr and freeing correctly all resources.
+    
+    Resolves: rhbz#740385
+    
+    Reviewed-by: Christine Caulfield <ccaulfie@redhat.com>
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/cman/cman_tool/cman_tool.h b/cman/cman_tool/cman_tool.h
+index e84b491..e1250ee 100644
+--- a/cman/cman_tool/cman_tool.h
++++ b/cman/cman_tool/cman_tool.h
+@@ -84,6 +84,7 @@ struct commandline
+ 	int remove;
+ 	int force;
+         int verbose;
++	int nostderr_debug;
+         int nodeid;
+ 	int timeout;
+ 	unsigned int config_version;
+diff --git a/cman/cman_tool/join.c b/cman/cman_tool/join.c
+index 0d24d99..b78d5ab 100644
+--- a/cman/cman_tool/join.c
++++ b/cman/cman_tool/join.c
+@@ -186,6 +186,10 @@ int join(commandline_t *comline, char *main_envp[])
+ 		snprintf(scratch, sizeof(scratch), "CMAN_DEBUG=%d", comline->verbose);
+ 		envp[envptr++] = strdup(scratch);
+ 	}
++	if (comline->nostderr_debug) {
++		snprintf(scratch, sizeof(scratch), "CMAN_NOSTDERR_DEBUG=true");
++		envp[envptr++] = strdup(scratch);
++	}
+ 	if (comline->noconfig_opt) {
+ 		envp[envptr++] = strdup("CMAN_NOCONFIG=true");
+ 		snprintf(config_modules, sizeof(config_modules), "cmanpreconfig");
+diff --git a/cman/cman_tool/main.c b/cman/cman_tool/main.c
+index 886e6a7..c3d1863 100644
+--- a/cman/cman_tool/main.c
++++ b/cman/cman_tool/main.c
+@@ -10,7 +10,7 @@
+ 
+ #define DEFAULT_CONFIG_MODULE "xmlconfig"
+ 
+-#define OPTION_STRING		("m:n:v:e:2p:c:i:N:t:o:k:F:C:VAPwfqah?XD::Sd::r::")
++#define OPTION_STRING		("m:n:v:e:2p:c:i:N:t:o:k:F:C:VAPwfqazh?XD::Sd::r::")
+ #define OP_JOIN			1
+ #define OP_LEAVE		2
+ #define OP_EXPECTED		3
+@@ -60,6 +60,7 @@ static void print_usage(int subcmd)
+ 		printf("  -D<fail|warn|none> What to do about the config. Default (without -D) is to\n");
+ 		printf("                   validate the config. with -D no validation will be done.\n");
+ 		printf("                   -Dwarn will print errors but allow the operation to continue.\n");
++		printf("  -z		   Disable stderr debugging output.\n");
+ 		printf("\n");
+ 	}
+ 
+@@ -1045,6 +1046,10 @@ static void decode_arguments(int argc, char *argv[], commandline_t *comline)
+ 				comline->verbose = 255;
+ 			break;
+ 
++		case 'z':
++			comline->nostderr_debug = 1;
++			break;
++
+ 		case 'w':
+ 			comline->wait_opt = TRUE;
+ 			break;
+diff --git a/cman/daemon/ais.c b/cman/daemon/ais.c
+index 05cb8d7..6b5640a 100644
+--- a/cman/daemon/ais.c
++++ b/cman/daemon/ais.c
+@@ -14,6 +14,8 @@
+ #include <arpa/inet.h>
+ #include <netdb.h>
+ #include <inttypes.h>
++#include <sys/stat.h>
++#include <fcntl.h>
+ 
+ /* corosync headers */
+ #include <corosync/corotypes.h>
+@@ -220,6 +222,15 @@ static int cman_exec_init_fn(struct corosync_api_v1 *api)
+ 	api->tpg_init(&group_handle, cman_deliver_fn, cman_confchg_fn);
+ 	api->tpg_join(group_handle, cman_group, 1);
+ 
++	if (getenv("CMAN_NOSTDERR_DEBUG")) {
++		int tmpfd;
++		tmpfd = open("/dev/null", O_RDWR);
++		if (tmpfd > -1 && tmpfd != STDERR_FILENO) {
++			dup2(tmpfd, STDERR_FILENO);
++			close(tmpfd);
++		}
++	}
++
+ 	return 0;
+ }
+ 
+diff --git a/cman/init.d/cman.in b/cman/init.d/cman.in
+index 258df48..48fab3c 100644
+--- a/cman/init.d/cman.in
++++ b/cman/init.d/cman.in
+@@ -497,7 +497,7 @@ start_cman()
+ 		return 1
+ 	fi
+ 
+-	cman_tool -t $CMAN_CLUSTER_TIMEOUT -w join $cman_join_opts > $tmpfile 2>&1 &
++	cman_tool -z -t $CMAN_CLUSTER_TIMEOUT -w join $cman_join_opts > $tmpfile 2>&1 &
+ 
+ 	while status cman_tool >/dev/null 2>&1; do
+ 		sleep 0.2

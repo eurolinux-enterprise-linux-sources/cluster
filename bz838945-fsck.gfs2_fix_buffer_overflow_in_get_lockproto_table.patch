@@ -1,0 +1,85 @@
+commit f796ee8752712e9e523e1516bb9165b274552753
+Author: Andrew Price <anprice@redhat.com>
+Date:   Sat Jul 7 22:03:24 2012 +0100
+
+    fsck.gfs2: Fix buffer overflow in get_lockproto_table
+    
+    Coverity discovered a buffer overflow in this function where an overly
+    long cluster name in cluster.conf could cause a crash while repairing
+    the superblock. This patch fixes the bug by making sure the lock table
+    is composed sensibly, limiting the fsname to 16 chars as documented, and
+    only allowing the cluster name (which doesn't seem to have a documented
+    max size) to use the remaining space in the locktable name string.
+    
+    Resolves: rhbz#838945
+    
+    Signed-off-by: Andrew Price <anprice@redhat.com>
+
+diff --git a/gfs2/fsck/initialize.c b/gfs2/fsck/initialize.c
+index 28fe03d..558fd03 100644
+--- a/gfs2/fsck/initialize.c
++++ b/gfs2/fsck/initialize.c
+@@ -750,12 +750,13 @@ static int init_system_inodes(struct gfs2_sbd *sdp)
+ static int get_lockproto_table(struct gfs2_sbd *sdp)
+ {
+ 	FILE *fp;
+-	char line[PATH_MAX], *p, *p2;
+-	char fsname[PATH_MAX];
++	char line[PATH_MAX];
++	char *cluname, *end;
++	const char *fsname, *cfgfile = "/etc/cluster/cluster.conf";
+ 
+ 	memset(sdp->lockproto, 0, sizeof(sdp->lockproto));
+ 	memset(sdp->locktable, 0, sizeof(sdp->locktable));
+-	fp = fopen("/etc/cluster/cluster.conf", "rt");
++	fp = fopen(cfgfile, "rt");
+ 	if (!fp) {
+ 		/* no cluster.conf; must be a stand-alone file system */
+ 		strcpy(sdp->lockproto, "lock_nolock");
+@@ -768,28 +769,29 @@ static int get_lockproto_table(struct gfs2_sbd *sdp)
+ 	log_warn(_("Lock protocol assumed to be: " GFS2_DEFAULT_LOCKPROTO
+ 		   "\n"));
+ 	strcpy(sdp->lockproto, GFS2_DEFAULT_LOCKPROTO);
++
+ 	while (fgets(line, sizeof(line) - 1, fp)) {
+-		p = strstr(line,"<cluster name=");
+-		if (p) {
+-			p += 15;
+-			p2 = strchr(p,'"');
+-			strncpy(sdp->locktable, p, p2 - p);
++		cluname = strstr(line,"<cluster name=");
++		if (cluname) {
++			cluname += 15;
++			end = strchr(cluname,'"');
++			if (end)
++				*end = '\0';
+ 			break;
+ 		}
+ 	}
+-	if (sdp->locktable[0] == '\0') {
+-		log_err(_("Error: Unable to determine cluster name from "
+-			  "/etc/cluster.conf\n"));
++	if (cluname == NULL || end == NULL || end - cluname < 1) {
++		log_err(_("Error: Unable to determine cluster name from %s\n"),
++		                                                      cfgfile);
+ 	} else {
+-		memset(fsname, 0, sizeof(fsname));
+-		p = strrchr(opts.device, '/');
+-		if (p) {
+-			p++;
+-			strncpy(fsname, p, sizeof(fsname));
+-		} else
+-			strcpy(fsname, "repaired");
+-		strcat(sdp->locktable, ":");
+-		strcat(sdp->locktable, fsname);
++		fsname = strrchr(opts.device, '/');
++		if (fsname)
++			fsname++;
++		else
++			fsname = "repaired";
++		snprintf(sdp->locktable, sizeof(sdp->locktable), "%.*s:%.16s",
++		         (int)(sizeof(sdp->locktable) - strlen(fsname) - 2),
++		         cluname, fsname);
+ 		log_warn(_("Lock table determined to be: %s\n"),
+ 			 sdp->locktable);
+ 	}

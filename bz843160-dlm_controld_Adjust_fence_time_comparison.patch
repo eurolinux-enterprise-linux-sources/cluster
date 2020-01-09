@@ -1,0 +1,84 @@
+commit 2d06dd478c27bf864ba1a5ac0cbb1ba6c3ed947f
+Author: David Teigland <teigland@redhat.com>
+Date:   Fri Jan 10 16:01:35 2014 -0600
+
+    dlm_controld: adjust fence time comparison
+    
+    An unusual combination of events can cause the fence
+    time comparison to not work properly, leaving
+    dlm_controld recovery stuck.
+    
+    If fencing in fenced completes very quickly, and the
+    cpg callback into dlm_controld is delayed, the effect
+    is that the fence_time returned from fenced is later
+    than the fail_time recorded in the cpg callback.
+    dlm_controld requires that the fencing time is after
+    the fail time.
+    
+    This is solved by saving the add_time when fail_time
+    is recorded as need_fence_after.  The fencing check
+    is then changed to also succeed if fence_time is
+    later than need_fence_after.  A simple comparison
+    with add_time does not work as shown in commit
+    4039bf4817a96b6aab20de948389f43b89ce4a8e.
+    
+    bz 843160
+    
+    Signed-off-by: David Teigland <teigland@redhat.com>
+
+diff --git a/group/dlm_controld/cpg.c b/group/dlm_controld/cpg.c
+index 6a4023b..795efc4 100644
+--- a/group/dlm_controld/cpg.c
++++ b/group/dlm_controld/cpg.c
+@@ -47,6 +47,7 @@ struct node {
+ 	uint64_t add_time;
+ 	uint64_t fail_time;
+ 	uint64_t fence_time;	/* for debug */
++	uint64_t need_fence_after;
+ 	uint64_t cluster_add_time;
+ 	uint64_t cluster_remove_time;
+ 	uint32_t fence_queries;	/* for debug */
+@@ -502,6 +503,7 @@ static void node_history_fail(struct lockspace *ls, int nodeid,
+ 		node->fence_time = 0;
+ 		node->fence_queries = 0;
+ 		node->fail_time = time(NULL);
++		node->need_fence_after = node->add_time;
+ 	}
+ 
+ 	/* fenced will take care of making sure the quorum value
+@@ -546,12 +548,20 @@ static int check_fencing_done(struct lockspace *ls)
+ 		   we've seen fenced_time within the same second as
+ 		   fail_time: with external fencing, e.g. fence_node */
+ 
+-		if (last_fenced_time >= node->fail_time) {
++		/* the comparison with need_fence_after is to deal with
++		   the odd case where fencing completes very quickly in
++		   fenced and there is a delay of the delivery of the cpg
++		   callback (and setting fail_time) in dlm_controld,
++		   placing the fail_time after the fence_time. */
++
++		if ((last_fenced_time >= node->fail_time) ||
++		    (last_fenced_time > node->need_fence_after)) {
+ 			log_group(ls, "check_fencing %d done "
+-				  "add %llu fail %llu last %llu",
++				  "add %llu fail %llu need %llu last %llu",
+ 				  node->nodeid,
+ 				  (unsigned long long)node->add_time,
+ 				  (unsigned long long)node->fail_time,
++				  (unsigned long long)node->need_fence_after,
+ 				  (unsigned long long)last_fenced_time);
+ 			node->check_fencing = 0;
+ 			node->add_time = 0;
+@@ -560,10 +570,11 @@ static int check_fencing_done(struct lockspace *ls)
+ 			if (!node->fence_queries ||
+ 			    node->fence_time != last_fenced_time) {
+ 				log_group(ls, "check_fencing %d wait "
+-					  "add %llu fail %llu last %llu",
++					  "add %llu fail %llu need %llu last %llu",
+ 					  node->nodeid,
+ 					 (unsigned long long)node->add_time,
+ 					 (unsigned long long)node->fail_time,
++				  	 (unsigned long long)node->need_fence_after,
+ 					 (unsigned long long)last_fenced_time);
+ 				node->fence_queries++;
+ 				node->fence_time = last_fenced_time;

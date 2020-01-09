@@ -1,0 +1,33 @@
+From eb32171e9353f4da43d0ed46a077bc8419a09b02 Mon Sep 17 00:00:00 2001
+From: Bob Peterson <rpeterso@redhat.com>
+Date: Mon, 17 Dec 2012 14:56:16 -0600
+Subject: [PATCH 3/8] gfs2_convert: remember number of blocks when converting
+ quotas
+
+This patch changes function copy_quotas so that it properly copies
+the di_blocks field from the GFS1 quotas file to its new GFS2 file.
+If the quota file had a non-trivial size, gfs2_convert was copying
+all the data and pointers, but not properly setting the di_blocks.
+This ordinarily isn't tragic because the file is never deleted, but
+it did flag fsck.gfs2 errors.
+
+rhbz#888053
+---
+ gfs2/convert/gfs2_convert.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/gfs2/convert/gfs2_convert.c b/gfs2/convert/gfs2_convert.c
+index ee41117..8427326 100644
+--- a/gfs2/convert/gfs2_convert.c
++++ b/gfs2/convert/gfs2_convert.c
+@@ -2033,6 +2033,7 @@ static void copy_quotas(struct gfs2_sbd *sdp)
+ 
+ 	nq_ip->i_di.di_height = oq_ip->i_di.di_height;
+ 	nq_ip->i_di.di_size = oq_ip->i_di.di_size;
++	nq_ip->i_di.di_blocks = oq_ip->i_di.di_blocks;
+ 	memcpy(nq_ip->i_bh->b_data + sizeof(struct gfs2_dinode), 
+ 	       oq_ip->i_bh->b_data + sizeof(struct gfs2_dinode),
+ 	       sdp->bsize - sizeof(struct gfs2_dinode));
+-- 
+1.7.11.7
+

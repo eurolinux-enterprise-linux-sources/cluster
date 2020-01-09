@@ -1,0 +1,169 @@
+commit 1994f1fd6d211e0740ea9fb9e8356512c2bf1091
+Author: Bob Peterson <bob@krishna.(none)>
+Date:   Mon Oct 31 07:24:12 2011 -0500
+
+    gfs2_edit savemeta: fix block range checking
+    
+    This patch fixes gfs2_edit's block range checking to use the standard
+    variables and standard range checking.
+    
+    rhbz#749864
+
+diff --git a/gfs2/edit/savemeta.c b/gfs2/edit/savemeta.c
+index 0563cdd..389db99 100644
+--- a/gfs2/edit/savemeta.c
++++ b/gfs2/edit/savemeta.c
+@@ -41,7 +41,7 @@ struct metafd {
+ };
+ 
+ struct saved_metablock *savedata;
+-uint64_t last_fs_block, last_reported_block, blks_saved, total_out, pct;
++uint64_t last_reported_block, blks_saved, total_out, pct;
+ uint64_t journal_blocks[MAX_JOURNALS_SAVED];
+ uint64_t gfs1_journal_size = 0; /* in blocks */
+ int journals_found = 0;
+@@ -187,9 +187,9 @@ static void warm_fuzzy_stuff(uint64_t wfsblock, int force)
+ 		static uint64_t percent;
+ 
+ 		seconds = tv.tv_sec;
+-		if (last_fs_block) {
++		if (sbd.fssize) {
+ 			printf("\r");
+-			percent = (wfsblock * 100) / last_fs_block;
++			percent = (wfsblock * 100) / sbd.fssize;
+ 			printf("%" PRIu64 " inodes processed, %" PRIu64
+ 			       " blocks saved (%" PRIu64 "%%) processed,",
+ 			       wfsblock, blks_saved, percent);
+@@ -298,7 +298,7 @@ static int save_block(int fd, struct metafd *mfd, uint64_t blk)
+ 	char *p;
+ 	struct gfs2_buffer_head *savebh;
+ 
+-	if (blk > last_fs_block) {
++	if (gfs2_check_range(&sbd, blk) && blk != sbd.sb_addr) {
+ 		fprintf(stderr, "\nWarning: bad block pointer '0x%llx' "
+ 			"ignored in block (block %llu (0x%llx))",
+ 			(unsigned long long)blk,
+@@ -418,7 +418,8 @@ static void save_indirect_blocks(struct metafd *mfd, osi_list_t *cur_list,
+ 			save_ea_block(mfd, nbh);
+ 			brelse(nbh);
+ 		}
+-		if (height != hgt) { /* If not at max height */
++		if (height != hgt && /* If not at max height and */
++		    (!gfs2_check_range(&sbd, indir_block))) {
+ 			nbh = bread(&sbd, indir_block);
+ 			osi_list_add_prev(&nbh->b_altlist, cur_list);
+ 			/* The buffer_head needs to be queued ahead, so
+@@ -634,14 +635,11 @@ static int next_rg_freemeta(struct gfs2_sbd *sdp, struct rgrp_tree *rgd,
+ 
+ void savemeta(char *out_fn, int saveoption, int gziplevel)
+ {
+-	osi_list_t *tmp;
+ 	int rgcount;
+ 	uint64_t jindex_block;
+ 	struct gfs2_buffer_head *lbh;
+-	struct rgrp_tree *last_rgd, *prev_rgd;
+ 	struct metafd mfd;
+ 	int sane;
+-	uint64_t fssize;
+ 	struct osi_node *n, *next = NULL;
+ 
+ 	sbd.md.journals = 1;
+@@ -678,9 +676,8 @@ void savemeta(char *out_fn, int saveoption, int gziplevel)
+ 	}
+ 	if (sbd.gfs1)
+ 		sbd.bsize = sbd.sd_sb.sb_bsize;
+-	last_fs_block = lseek(sbd.device_fd, 0, SEEK_END) / sbd.bsize;
+ 	printf("There are %" PRIu64 " blocks of %u bytes in the destination "
+-	       "device.\n", last_fs_block, sbd.bsize);
++	       "device.\n", sbd.fssize, sbd.bsize);
+ 	if (sbd.gfs1) {
+ 		sbd.md.riinode = inode_read(&sbd, sbd1->sb_rindex_di.no_addr);
+ 		jindex_block = sbd1->sb_jindex_di.no_addr;
+@@ -703,15 +700,7 @@ void savemeta(char *out_fn, int saveoption, int gziplevel)
+ 		gfs1_ri_update(&sbd, 0, &rgcount, 0);
+ 	else
+ 		ri_update(&sbd, 0, &rgcount, &sane);
+-	n = osi_last(&sbd.rgtree);
+-	last_rgd = (struct rgrp_tree *)n;
+-	n = osi_prev(n);
+-	prev_rgd = (struct rgrp_tree *)n;
+-	fssize = last_rgd->ri.ri_addr +
+-		(last_rgd->ri.ri_addr - prev_rgd->ri.ri_addr);
+-	last_fs_block = fssize;
+-	fssize *= sbd.bsize;
+-	printf("Done. File system size: %s\n\n", anthropomorphize(fssize));
++	printf("Done. File system size: %s\n\n", anthropomorphize(sbd.fssize));
+ 	fflush(stdout);
+ 	get_journal_inode_blocks();
+ 
+@@ -780,7 +769,7 @@ void savemeta(char *out_fn, int saveoption, int gziplevel)
+ 	/* Clean up */
+ 	/* There may be a gap between end of file system and end of device */
+ 	/* so we tell the user that we've processed everything. */
+-	block = last_fs_block;
++	block = sbd.fssize;
+ 	warm_fuzzy_stuff(block, TRUE);
+ 	printf("\nMetadata saved to file %s ", mfd.filename);
+ 	if (mfd.gziplevel) {
+@@ -832,7 +821,6 @@ static int restore_data(int fd, gzFile *gzin_fd, int printblocksonly,
+ 		exit(-1);
+ 	}
+ 	blks_saved = total_out = 0;
+-	last_fs_block = 0;
+ 	while (TRUE) {
+ 		struct gfs2_buffer_head dummy_bh;
+ 
+@@ -847,11 +835,11 @@ static int restore_data(int fd, gzFile *gzin_fd, int printblocksonly,
+ 		total_out += sbd.bsize;
+ 		savedata->blk = be64_to_cpu(buf64);
+ 		if (!printblocksonly &&
+-		    last_fs_block && savedata->blk >= last_fs_block) {
++		    sbd.fssize && savedata->blk >= sbd.fssize) {
+ 			fprintf(stderr, "Error: File system is too small to "
+ 				"restore this metadata.\n");
+ 			fprintf(stderr, "File system is %" PRIu64 " blocks, ",
+-				last_fs_block);
++				sbd.fssize);
+ 			fprintf(stderr, "Restore block = %" PRIu64 "\n",
+ 				savedata->blk);
+ 			return -1;
+@@ -901,12 +889,12 @@ static int restore_data(int fd, gzFile *gzin_fd, int printblocksonly,
+ 			if (find_highblk)
+ 				;
+ 			else if (!printblocksonly) {
+-				last_fs_block =
++				sbd.fssize =
+ 					lseek(fd, 0, SEEK_END) / sbd.bsize;
+ 				printf("There are %" PRIu64 " blocks of " \
+ 				       "%u bytes in the destination"	\
+ 				       " device.\n\n",
+-				       last_fs_block, sbd.bsize);
++				       sbd.fssize, sbd.bsize);
+ 			} else {
+ 				printf("This is %s metadata\n", sbd.gfs1 ?
+ 				       "gfs (not gfs2)" : "gfs2");
+@@ -932,7 +920,7 @@ static int restore_data(int fd, gzFile *gzin_fd, int printblocksonly,
+ 			}
+ 		} else {
+ 			warm_fuzzy_stuff(savedata->blk, FALSE);
+-			if (savedata->blk >= last_fs_block) {
++			if (savedata->blk >= sbd.fssize) {
+ 				printf("\nOut of space on the destination "
+ 				       "device; quitting.\n");
+ 				break;
+@@ -961,13 +949,13 @@ static int restore_data(int fd, gzFile *gzin_fd, int printblocksonly,
+ 		blks_saved++;
+ 	}
+ 	if (!printblocksonly && !find_highblk)
+-		warm_fuzzy_stuff(last_fs_block, TRUE);
++		warm_fuzzy_stuff(sbd.fssize, TRUE);
+ 	if (find_highblk) {
+ 		printf("File system size: %lld (0x%llx) blocks, aka %sB\n",
+ 		       (unsigned long long)highest_valid_block,
+ 		       (unsigned long long)highest_valid_block,
+ 		       anthropomorphize(highest_valid_block * sbd.bsize));
+-		last_fs_block = highest_valid_block;
++		sbd.fssize = highest_valid_block;
+ 	}
+ 	return 0;
+ }

@@ -1,0 +1,29 @@
+commit 3b33ff879bb10d5086cf4a62f53b4bd8a37ca571
+Author: Andrew Price <anprice@redhat.com>
+Date:   Wed Oct 5 00:18:17 2011 +0100
+
+    libgfs2: Don't count sentinel dirent as an entry
+    
+    dir_split_leaf() adds a sentinel dirent using dirent_alloc() which
+    increments di_entries in the directory dinode. Since sentinel dirents
+    aren't real directory entries, di_entries becomes too high in some
+    situations. This patch decrements di_entries after the sentinel dirent
+    is created to fix the discrepancy.
+    
+    rhbz#745161
+    
+    Signed-off-by: Andrew Price <anprice@redhat.com>
+
+diff --git a/gfs2/libgfs2/fs_ops.c b/gfs2/libgfs2/fs_ops.c
+index 353d47f..3d57b97 100644
+--- a/gfs2/libgfs2/fs_ops.c
++++ b/gfs2/libgfs2/fs_ops.c
+@@ -929,6 +929,8 @@ static void dir_split_leaf(struct gfs2_inode *dip, uint32_t lindex,
+ 		if (dirent_alloc(dip, nbh, 0, &new))
+ 			die("dir_split_leaf (4)\n");
+ 		new->de_inum.no_formal_ino = 0;
++		/* Don't count the sentinel dirent as an entry */
++		dip->i_di.di_entries--;
+ 	}
+ 
+ 	oleaf->lf_depth = be16_to_cpu(oleaf->lf_depth) + 1;

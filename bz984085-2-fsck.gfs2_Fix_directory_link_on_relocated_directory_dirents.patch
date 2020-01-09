@@ -1,0 +1,45 @@
+commit 0aba0e8625b7c36ba355fb250090d37d9a2f079f
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Mon Jul 15 13:50:21 2013 -0500
+
+    fsck.gfs2: Fix directory link on relocated directory dirents
+    
+    There was a problem whereby fsck.gfs2 would discover a directory entry
+    that's on the wrong leaf block (the dirent's hash value doesn't fit
+    the acceptable range for that leaf block). In that case, fsck would
+    relocate the dirent to an appropriate leaf block. The problem is, if
+    that dirent was for a directory, the directory link count was adjusted
+    appropriately, but it was not properly added to the directory linkage
+    due to the fact that it took an error path in order to delete the
+    dirent that was relocated. This resulted in a problem when pass3 went
+    to verify the directory linkage. Despite the intact directory linkage,
+    it flagged the directory as not linked, then it improperly added it
+    to lost+found. Subsequent fsck.gfs2 would discover the double-linkage
+    problems.
+    
+    rhbz#984085
+
+diff --git a/gfs2/fsck/pass2.c b/gfs2/fsck/pass2.c
+index a9ccac1..78bc34b 100644
+--- a/gfs2/fsck/pass2.c
++++ b/gfs2/fsck/pass2.c
+@@ -389,7 +389,18 @@ static int wrong_leaf(struct gfs2_inode *ip, struct gfs2_inum *entry,
+ 		   leaf, but that leaf has already been processed. So we have
+ 		   to nuke the dent from this leaf when we return, but we
+ 		   still need to do the "good dent" accounting. */
+-		error = incr_link_count(*entry, ip, _("valid reference"));
++		if (de->de_type == (sdp->gfs1 ? GFS_FILE_DIR : DT_DIR)) {
++			error = set_parent_dir(sdp, de->de_inum,
++					       ip->i_di.di_num);
++			if (error > 0)
++				/* This is a bit of a kludge, but returning 0
++				   in this case causes the caller to go through
++				   function set_parent_dir a second time and
++				   deal properly with the hard link. */
++				return 0;
++		}
++		error = incr_link_count(*entry, ip,
++					_("moved valid reference"));
+ 		if (error > 0 &&
+ 		    bad_formal_ino(ip, dent, *entry, tmp_name, q, de, bh) == 1)
+ 			return 1; /* nuke it */

@@ -1,0 +1,31 @@
+commit b178d9ade44ed9a8e8609920b96960d1e79f7c84
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Tue Apr 2 11:50:31 2013 -0700
+
+    fsck.gfs2: print block count values when fixing them
+    
+    Before this patch, block counts were fixed, but it didn't log what
+    the new value was changed to. That made it very difficult to track
+    down block count problems. This patch changes the logging so that
+    it prints the new block count, and a breakdown of how many blocks
+    were counted for metadata, data, extended attributes, etc.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index a4967a4..92a8ff8 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -612,7 +612,11 @@ static int finish_eattr_indir(struct gfs2_inode *ip, int leaf_pointers,
+ 		ip->i_di.di_blocks = 1 + bc->indir_count +
+ 			bc->data_count + bc->ea_count;
+ 		bmodified(ip->i_bh);
+-		log_err( _("Block count fixed.\n"));
++		log_err(_("Block count fixed: 1+%lld+%lld+%lld = %lld.\n"),
++			(unsigned long long)bc->indir_count,
++			(unsigned long long)bc->data_count,
++			(unsigned long long)bc->ea_count,
++			(unsigned long long)ip->i_di.di_blocks);
+ 		return 1;
+ 	}
+ 	log_err( _("Block count not fixed.\n"));

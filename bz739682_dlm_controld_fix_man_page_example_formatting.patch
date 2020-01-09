@@ -1,0 +1,24 @@
+commit 49ca94c108228d9410a5cce883efe1edf85087fb
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Tue Sep 20 06:32:35 2011 +0200
+
+    dlm_controld: fix man page example formatting
+    
+    Resolves: rhbz#739682
+    
+    Acked-by: Marek 'marx' Grac <mgrac@redhat.com>
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/group/man/dlm_controld.8 b/group/man/dlm_controld.8
+index 3398e42..ebc44b0 100644
+--- a/group/man/dlm_controld.8
++++ b/group/man/dlm_controld.8
+@@ -249,7 +249,7 @@ option to 1.
+ 
+ .nf
+ <dlm>
+-  <lockspace name="foo" nodir="1">
++  <lockspace name="foo" nodir="1"/>
+ </dlm>
+ .fi
+ 

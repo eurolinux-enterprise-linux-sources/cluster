@@ -1,0 +1,79 @@
+commit 638deec0ccbf45862eee97294f09ba9d6b3f56d0
+Author: David Teigland <teigland@redhat.com>
+Date:   Fri Aug 3 10:12:15 2012 -0500
+
+    fenced: fix log file mode
+    
+    Remove umask(0) which caused liblogthread's fopen to
+    create fenced.log with mode 666.
+    
+    Check if existing fenced.log has mode 666 and if so,
+    chmod to 644.
+    
+    bz 845341
+    
+    Signed-off-by: David Teigland <teigland@redhat.com>
+
+diff --git a/fence/fenced/logging.c b/fence/fenced/logging.c
+index a6a1a66..56a7e08 100644
+--- a/fence/fenced/logging.c
++++ b/fence/fenced/logging.c
+@@ -39,8 +39,13 @@ void init_logging(void)
+ 		  logfile_priority, logfile);
+ }
+ 
++#define DEFAULT_LOGFILE_MODE (S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH)
++
+ void setup_logging(void)
+ {
++	struct stat buf;
++	int rv;
++
+ 	ccs_read_logging(ccs_handle, DAEMON_NAME,
+ 			 &cfgd_debug_logfile, &log_mode,
+ 			 &syslog_facility, &syslog_priority,
+@@ -52,6 +57,32 @@ void setup_logging(void)
+ 
+ 	logt_conf(DAEMON_NAME, log_mode, syslog_facility, syslog_priority,
+ 		  logfile_priority, logfile);
++
++	/*
++	 * Previously fenced.log was created with mode 666,
++	 * so fix it to be 644.
++	 */
++
++	rv = stat(logfile, &buf);
++	if (rv)
++		return;
++
++	log_debug("logfile cur mode %lo", (unsigned long)buf.st_mode);
++
++	if ((buf.st_mode & (S_IRWXU|S_IRWXG|S_IRWXO)) == DEFAULT_LOGFILE_MODE)
++		return;
++
++	rv = chmod(logfile, DEFAULT_LOGFILE_MODE);
++	if (rv) {
++		log_error("chmod error %d", errno);
++		return;
++	}
++
++	rv = stat(logfile, &buf);
++	if (rv)
++		return;
++
++	log_debug("logfile new mode %lo", (unsigned long)buf.st_mode);
+ }
+ 
+ void close_logging(void)
+diff --git a/fence/fenced/main.c b/fence/fenced/main.c
+index 835dc76..cc11382 100644
+--- a/fence/fenced/main.c
++++ b/fence/fenced/main.c
+@@ -1039,7 +1039,6 @@ int main(int argc, char **argv)
+ 			perror("main: cannot fork");
+ 			exit(EXIT_FAILURE);
+ 		}
+-		umask(0);
+ 	}
+ 	lockfile();
+ 	init_logging();

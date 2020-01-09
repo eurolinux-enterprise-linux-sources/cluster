@@ -1,0 +1,15 @@
+diff -ur a/config/tools/xml/cluster.rng.in.head b/config/tools/xml/cluster.rng.in.head
+--- a/config/tools/xml/cluster.rng.in.head	2014-07-03 11:27:42.030355368 -0400
++++ b/config/tools/xml/cluster.rng.in.head	2014-07-03 11:27:27.351699961 -0400
+@@ -885,6 +885,11 @@
+      <data type="integer"/>
+     </attribute>
+    </optional>
++   <optional>
++    <attribute name="reboot_on_pid_exhaustion" rha:description="Reboot the node immediately if fork() or pthread_create() fails due to PID exhaustion" rha:sample="">
++     <data type="integer"/>
++    </attribute>
++   </optional>
+    <interleave>
+    <optional>
+     <element name="failoverdomains" rha:description="Failover domain definitions.">

@@ -1,0 +1,59 @@
+commit e577c6d731c33b8309f02d7805d5a6fa59da5773
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Tue May 8 14:22:25 2012 +0200
+
+    cmannotifyd: deliver cluster status at startup and fix daemon init
+    
+    cmannotifyd is very often (if not always) started _after_ cman is
+    completely settled. That means cmannotifyd does not receive/dispatch
+    any notifications on the current cluster status at startup.
+    
+    change cman connection loop to generate a fake notification that
+    config and membership have changed (we can't poll if they did)
+    and use those information internally too, to reinit logging with
+    new cman connection.
+    
+    Resolves: rhbz#819787
+    
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+    Reviewed-by: Lon Hohberger <lhh@redhat.com>
+
+diff --git a/cman/notifyd/main.c b/cman/notifyd/main.c
+index d5c90c5..a5fe323 100644
+--- a/cman/notifyd/main.c
++++ b/cman/notifyd/main.c
+@@ -201,6 +201,10 @@ static void init_logging(int reconf)
+ 		ccs_read_logging(ccs_handle, "cmannotifyd", &debug, &mode,
+ 				 &syslog_facility, &syslog_priority, &logfile_priority, logfile);
+ 		ccs_disconnect(ccs_handle);
++	} else {
++		if (debug) {
++			logfile_priority = LOG_DEBUG;
++		}
+ 	}
+ 
+ 	if (!daemonize)
+@@ -320,6 +324,8 @@ static void byebye_cman(void)
+ static void setup_cman(int forever)
+ {
+ 	int init = 0, active = 0;
++	int quorate;
++	const char *str = NULL;
+ 
+ retry_init:
+ 	cman_handle = cman_init(NULL);
+@@ -355,6 +361,14 @@ retry_active:
+ 		exit(EXIT_FAILURE);
+ 	}
+ 
++	logt_print(LOG_DEBUG, "Dispatching first cluster status\n");
++	init_logging(1);
++	str = "CMAN_REASON_CONFIG_UPDATE";
++	dispatch_notification(str, 0);
++	str = "CMAN_REASON_STATECHANGE";
++	quorate = cman_is_quorate(cman_handle);
++	dispatch_notification(str, &quorate);
++
+ 	return;
+ 
+ out:

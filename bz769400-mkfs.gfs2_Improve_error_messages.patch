@@ -1,0 +1,43 @@
+commit 5cc5be69a593db11dce8745247f82d6b582d5313
+Author: Andrew Price <anprice@redhat.com>
+Date:   Wed Jan 18 16:30:12 2012 +0000
+
+    mkfs.gfs2: Improve error messages
+    
+    Currently mkfs.gfs2 does not warn that the lock table has been omitted,
+    it just complains about a missing colon in the lock table. It also
+    prefixes error messages with the absolute path of the source file. This
+    patch removes the path from error messages (in mkfs and edit) and adds a
+    check for an empty lock table.
+    
+    rhbz#769400
+    
+    Signed-off-by: Andrew Price <anprice@redhat.com>
+
+diff --git a/gfs2/libgfs2/libgfs2.h b/gfs2/libgfs2/libgfs2.h
+index 9e97267..9063c8b 100644
+--- a/gfs2/libgfs2/libgfs2.h
++++ b/gfs2/libgfs2/libgfs2.h
+@@ -77,7 +77,6 @@ static __inline__ __attribute__((noreturn, format (printf, 1, 2)))
+ void die(const char *fmt, ...)
+ {
+ 	va_list ap;
+-	fprintf(stderr, "%s: ", __FILE__);
+ 	va_start(ap, fmt);
+ 	vfprintf(stderr, fmt, ap);
+ 	va_end(ap);
+diff --git a/gfs2/mkfs/main_mkfs.c b/gfs2/mkfs/main_mkfs.c
+index 1bdfd55..3db3b14 100644
+--- a/gfs2/mkfs/main_mkfs.c
++++ b/gfs2/mkfs/main_mkfs.c
+@@ -258,6 +258,10 @@ static void test_locking(char *lockproto, char *locktable)
+ 		/*  Nolock is always ok.  */
+ 	} else if (strcmp(lockproto, "lock_gulm") == 0 ||
+ 		   strcmp(lockproto, "lock_dlm") == 0) {
++		if (locktable == NULL || *locktable == '\0') {
++			fprintf(stderr, _("No lock table specified.\n"));
++			exit(-1);
++		}
+ 		for (c = locktable; *c; c++) {
+ 			if (isspace(*c))
+ 				die( _("locktable error: contains space characters\n"));

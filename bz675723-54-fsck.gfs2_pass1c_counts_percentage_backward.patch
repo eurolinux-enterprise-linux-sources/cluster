@@ -1,0 +1,27 @@
+commit 68b32af3f105ca6a373328e66029ea80b8e8630b
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Fri Jan 6 14:20:26 2012 -0600
+
+    fsck.gfs2: pass1c counts percentage backward
+    
+    In testing I noticed that pass1c, which checks all extended
+    attributes, counted percent-complete backwards.  It's better to
+    count forward because disk block seeks will be more efficient.
+    This patch changes the special_list functions of block_list to
+    add items as "prev" so that they're processed in block order.
+    
+    rhbz#675723
+
+diff --git a/gfs2/libgfs2/block_list.c b/gfs2/libgfs2/block_list.c
+index 65003b0..554a1ef 100644
+--- a/gfs2/libgfs2/block_list.c
++++ b/gfs2/libgfs2/block_list.c
+@@ -42,7 +42,7 @@ void gfs2_special_add(struct special_blocks *blocklist, uint64_t block)
+ 	if (b) {
+ 		memset(b, 0, sizeof(*b));
+ 		b->block = block;
+-		osi_list_add(&b->list, &blocklist->list);
++		osi_list_add_prev(&b->list, &blocklist->list);
+ 	}
+ }
+ 

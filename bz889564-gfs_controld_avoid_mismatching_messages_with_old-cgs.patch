@@ -1,0 +1,50 @@
+commit 8b67fbb6e5e95510fcecbdd5cd5a91aa88f97750
+Author: David Teigland <teigland@redhat.com>
+Date:   Thu Jan 3 13:35:54 2013 -0600
+
+    gfs_controld: avoid mismatching messages with old cgs
+    
+    Only match start messages with cg's that are newer than
+    previously matched cg's for the node.
+    
+    bz 889564
+    
+    Signed-off-by: David Teigland <teigland@redhat.com>
+
+diff --git a/group/gfs_controld/cpg-new.c b/group/gfs_controld/cpg-new.c
+index fd20250..0cdfaae 100644
+--- a/group/gfs_controld/cpg-new.c
++++ b/group/gfs_controld/cpg-new.c
+@@ -121,6 +121,7 @@ struct node {
+ 	int failed_reason;
+ 	uint32_t added_seq;
+ 	uint32_t removed_seq;
++	uint32_t last_match_seq;
+ 	uint64_t add_time;
+ 
+ 	int withdraw;
+@@ -1001,6 +1002,15 @@ static int match_change(struct mountgroup *mg, struct change *cg,
+ 		return 0;
+ 	}
+ 
++	/* if we matched the last start message from this node against our
++	   cg N, then don't match this stsart message against an earlier cg */
++
++	if (node->last_match_seq > cg->seq) {
++		log_debug("match_change %d:%u skip cg %u last matched cg %u",
++			  hd->nodeid, seq, cg->seq, node->last_match_seq);
++		return 0;
++	}
++
+ 	/* verify this is the right change by matching the counts
+ 	   and the nodeids of the current members */
+ 
+@@ -1035,6 +1045,8 @@ static int match_change(struct mountgroup *mg, struct change *cg,
+ 	if (members_mismatch)
+ 		return 0;
+ 
++	node->last_match_seq = cg->seq;
++
+ 	log_group(mg, "match_change %d:%u matches cg %u", hd->nodeid, seq,
+ 		  cg->seq);
+ 	return 1;

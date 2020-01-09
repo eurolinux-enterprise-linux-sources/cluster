@@ -1,0 +1,357 @@
+commit 0bb980d9b18906bce56d7ba4567efb8f5dd377aa
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Fri Feb 22 06:31:22 2013 -0700
+
+    fsck.gfs2: Misc cleanups from upstream
+    
+    This patch fixes some minor things that appear in the upstream version.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/initialize.c b/gfs2/fsck/initialize.c
+index a288ed2..79e295b 100644
+--- a/gfs2/fsck/initialize.c
++++ b/gfs2/fsck/initialize.c
+@@ -174,8 +174,9 @@ static int set_block_ranges(struct gfs2_sbd *sdp)
+ 	error = read(sdp->device_fd, buf, sdp->sd_sb.sb_bsize);
+ 	if (error != sdp->sd_sb.sb_bsize){
+ 		log_crit( _("Can't read last block in file system (error %u), "
+-				 "last_fs_block: %"PRIu64" (0x%" PRIx64 ")\n"), error,
+-				 last_fs_block, last_fs_block);
++			 "last_fs_block: %llu (0x%llx)\n"), error,
++			 (unsigned long long)last_fs_block,
++			 (unsigned long long)last_fs_block);
+ 		goto fail;
+ 	}
+ 
+@@ -798,7 +799,7 @@ static int init_system_inodes(struct gfs2_sbd *sdp)
+ 
+ 	bl = gfs2_bmap_create(sdp, last_fs_block+1, &addl_mem_needed);
+ 	if (!bl) {
+-		log_crit( _("This system doesn't have enough memory + swap space to fsck this file system.\n"));
++		log_crit( _("This system doesn't have enough memory and swap space to fsck this file system.\n"));
+ 		log_crit( _("Additional memory needed is approximately: %lluMB\n"),
+ 			 (unsigned long long)(addl_mem_needed / 1048576ULL));
+ 		log_crit( _("Please increase your swap space by that amount and run gfs2_fsck again.\n"));
+@@ -1029,7 +1030,7 @@ static void peruse_user_dinode(struct gfs2_sbd *sdp, struct gfs2_dinode *di,
+ 		gfs2_lookupi(ip, "..", 2, &parent_ip);
+ 		if (parent_ip && parent_ip->i_di.di_num.no_addr ==
+ 		    ip->i_di.di_num.no_addr) {
+-			log_warn(_("fsck found the root inode at: 0x%llx\n"),
++			log_warn(_("Found the root directory at: 0x%llx\n"),
+ 				 ip->i_di.di_num.no_addr);
+ 			sdp->sd_sb.sb_root_dir.no_addr =
+ 				ip->i_di.di_num.no_addr;
+@@ -1207,7 +1208,7 @@ static int sb_repair(struct gfs2_sbd *sdp)
+ 				  "be the root; using master - 1.\n"));
+ 			possible_root = sdp->sd_sb.sb_master_dir.no_addr - 1;
+ 		}
+-		log_err(_("Found a root directory candidate at  0x%llx\n"),
++		log_err(_("Found a possible root at: 0x%llx\n"),
+ 			(unsigned long long)possible_root);
+ 		sdp->sd_sb.sb_root_dir.no_addr = possible_root;
+ 		sdp->md.rooti = inode_read(sdp, possible_root);
+@@ -1235,7 +1236,7 @@ static int sb_repair(struct gfs2_sbd *sdp)
+ 	/* Step 3 - Rebuild the lock protocol and file system table name */
+ 	get_lockproto_table(sdp);
+ 	if (query(_("Okay to fix the GFS2 superblock? (y/n)"))) {
+-		log_info(_("Master system directory found at: 0x%llx\n"),
++		log_info(_("Found system master directory at: 0x%llx\n"),
+ 			 sdp->sd_sb.sb_master_dir.no_addr);
+ 		sdp->master_dir = inode_read(sdp,
+ 					     sdp->sd_sb.sb_master_dir.no_addr);
+diff --git a/gfs2/fsck/inode_hash.c b/gfs2/fsck/inode_hash.c
+index ac88057..56581b7 100644
+--- a/gfs2/fsck/inode_hash.c
++++ b/gfs2/fsck/inode_hash.c
+@@ -1,10 +1,10 @@
+ #include <stdint.h>
+ #include <unistd.h>
+ #include <libintl.h>
++#include <string.h>
+ 
+ #include "libgfs2.h"
+ #include "osi_list.h"
+-#include "hash.h"
+ #include "inode_hash.h"
+ #include "fsck.h"
+ #define _(String) gettext(String)
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index 4164722..709ff94 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -15,7 +15,6 @@
+ #include "fsck.h"
+ #include "util.h"
+ #include "metawalk.h"
+-#include "hash.h"
+ #include "inode_hash.h"
+ 
+ #define COMFORTABLE_BLKS 5242880 /* 20GB in 4K blocks */
+@@ -36,7 +35,7 @@ int check_n_fix_bitmap(struct gfs2_sbd *sdp, uint64_t blk,
+ 
+ 	old_bitmap_state = gfs2_get_bitmap(sdp, blk, rgd);
+ 	if (old_bitmap_state < 0) {
+-		log_err( _("Block %lld (0x%llx) is not represented in the "
++		log_err( _("Block %llu (0x%llx) is not represented in the "
+ 			   "system bitmap; part of an rgrp or superblock.\n"),
+ 			 (unsigned long long)blk, (unsigned long long)blk);
+ 		return -1;
+@@ -317,13 +316,11 @@ static void dirblk_truncate(struct gfs2_inode *ip, struct gfs2_dirent *fixb,
+ {
+ 	char *bh_end;
+ 	struct gfs2_dirent de;
+-	uint16_t old_rec_len;
+ 
+ 	bh_end = bh->b_data + ip->i_sbd->sd_sb.sb_bsize;
+ 	/* truncate the block to save the most dentries.  To do this we
+ 	   have to patch the previous dent. */
+ 	gfs2_dirent_in(&de, (char *)fixb);
+-	old_rec_len = de.de_rec_len;
+ 	de.de_rec_len = bh_end - (char *)fixb;
+ 	gfs2_dirent_out(&de, (char *)fixb);
+ 	bmodified(bh);
+@@ -336,6 +333,7 @@ static void dirblk_truncate(struct gfs2_inode *ip, struct gfs2_dirent *fixb,
+  * bh - buffer for the leaf block
+  * type - type of block this is (linear or exhash)
+  * @count - set to the count entries
++ * @lindex - the last inde
+  * @pass - structure pointing to pass-specific functions
+  *
+  * returns: 0 - good block or it was repaired to be good
+@@ -344,7 +342,6 @@ static void dirblk_truncate(struct gfs2_inode *ip, struct gfs2_dirent *fixb,
+ static int check_entries(struct gfs2_inode *ip, struct gfs2_buffer_head *bh,
+ 		  int type, uint32_t *count, struct metawalk_fxns *pass)
+ {
+-	struct gfs2_leaf *leaf = NULL;
+ 	struct gfs2_dirent *dent;
+ 	struct gfs2_dirent de, *prev;
+ 	int error = 0;
+@@ -359,9 +356,9 @@ static int check_entries(struct gfs2_inode *ip, struct gfs2_buffer_head *bh,
+ 	}
+ 	else if (type == DIR_EXHASH) {
+ 		dent = (struct gfs2_dirent *)(bh->b_data + sizeof(struct gfs2_leaf));
+-		leaf = (struct gfs2_leaf *)bh->b_data;
+-		log_debug( _("Checking leaf %" PRIu64 " (0x%" PRIx64 ")\n"),
+-				  bh->b_blocknr, bh->b_blocknr);
++		log_debug( _("Checking leaf %llu (0x%llu)\n"),
++			  (unsigned long long)bh->b_blocknr,
++			  (unsigned long long)bh->b_blocknr);
+ 	}
+ 	else {
+ 		log_err( _("Invalid directory type %d specified\n"), type);
+@@ -517,6 +514,8 @@ static int warn_and_patch(struct gfs2_inode *ip, uint64_t *leaf_no,
+ 
+ /**
+  * check_leaf - check a leaf block for errors
++ * Reads in the leaf block
++ * Leaves the buffer around for further analysis (caller must brelse)
+  */
+ static int check_leaf(struct gfs2_inode *ip, int lindex,
+ 		      struct metawalk_fxns *pass, int *ref_count,
+@@ -1038,8 +1037,9 @@ static int check_indirect_eattr(struct gfs2_inode *ip, uint64_t indirect,
+ 	uint64_t di_eattr_save = ip->i_di.di_eattr;
+ 	uint64_t offset = ip->i_sbd->gfs1 ? sizeof(struct gfs_indirect) : sizeof(struct gfs2_meta_header);
+ 
+-	log_debug( _("Checking EA indirect block #%"PRIu64" (0x%" PRIx64 ").\n"),
+-			  indirect, indirect);
++	log_debug( _("Checking EA indirect block #%llu (0x%llx).\n"),
++		  (unsigned long long)indirect,
++		  (unsigned long long)indirect);
+ 
+ 	if (!pass->check_eattr_indir)
+ 		return 0;
+@@ -1171,6 +1171,9 @@ static void free_metalist(struct gfs2_inode *ip, osi_list_t *mlp)
+  *                            This includes hash table blocks for directories
+  *                            which are technically "data" in the bitmap.
+  *
++ * Returns: 0 - all is well, process the blocks this metadata references
++ *          1 - something went wrong, but process the sub-blocks anyway
++ *         -1 - something went wrong, so don't process the sub-blocks
+  * @ip:
+  * @mlp:
+  */
+@@ -1248,9 +1251,9 @@ static int build_and_check_metalist(struct gfs2_inode *ip, osi_list_t *mlp,
+ 				if (err > 0) {
+ 					if (!error)
+ 						error = err;
+-					log_debug( _("Skipping block %" PRIu64
+-						     " (0x%" PRIx64 ")\n"),
+-						   block, block);
++					log_debug( _("Skipping block %llu (0x%llx)\n"),
++						   (unsigned long long)block,
++						   (unsigned long long)block);
+ 					continue;
+ 				}
+ 				if (!valid_block(ip->i_sbd, block)) {
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index 13cb1cb..fe80369 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -210,7 +210,7 @@ static int check_leaf(struct gfs2_inode *ip, uint64_t block, void *private)
+ 	   So we know it's a leaf block. */
+ 	q = block_type(block);
+ 	if (q != gfs2_block_free) {
+-		log_err( _("Found duplicate block %llu (0x%llx) referenced "
++		log_err( _("Found duplicate block #%llu (0x%llx) referenced "
+ 			   "as a directory leaf in dinode "
+ 			   "%llu (0x%llx) - was marked %d (%s)\n"),
+ 			 (unsigned long long)block,
+@@ -263,7 +263,7 @@ static int check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 	}
+ 	q = block_type(block);
+ 	if (q != gfs2_block_free) {
+-		log_err( _("Found duplicate block %llu (0x%llx) referenced "
++		log_err( _("Found duplicate block #%llu (0x%llx) referenced "
+ 			   "as metadata in indirect block for dinode "
+ 			   "%llu (0x%llx) - was marked %d (%s)\n"),
+ 			 (unsigned long long)block,
+@@ -1423,8 +1423,6 @@ int pass1(struct gfs2_sbd *sdp)
+ 	struct rgrp_tree *rgd;
+ 	int first;
+ 	uint64_t i;
+-	uint64_t blk_count;
+-	uint64_t offset;
+ 	uint64_t rg_count = 0;
+ 
+ 	osi_list_init(&gfs1_rindex_blks.list);
+@@ -1468,8 +1466,6 @@ int pass1(struct gfs2_sbd *sdp)
+ 			gfs2_meta_rgrp);*/
+ 		}
+ 
+-		offset = sizeof(struct gfs2_rgrp);
+-		blk_count = 1;
+ 		first = 1;
+ 
+ 		while (1) {
+diff --git a/gfs2/fsck/pass1c.c b/gfs2/fsck/pass1c.c
+index f7a7842..f9bfa6a 100644
+--- a/gfs2/fsck/pass1c.c
++++ b/gfs2/fsck/pass1c.c
+@@ -24,9 +24,10 @@ static int remove_eattr_entry(struct gfs2_sbd *sdp,
+ 		if (curr->ea_flags & GFS2_EAFLAG_LAST)
+ 			prev->ea_flags |= GFS2_EAFLAG_LAST;	
+ 	}
+-	log_err( _("Bad Extended Attribute at block #%"PRIu64
+-		   " (0x%" PRIx64 ") removed.\n"),
+-		 leaf_bh->b_blocknr, leaf_bh->b_blocknr);
++	log_err( _("Bad Extended Attribute at block #%llu"
++		   " (0x%llx) removed.\n"),
++		 (unsigned long long)leaf_bh->b_blocknr,
++		 (unsigned long long)leaf_bh->b_blocknr);
+ 	bmodified(leaf_bh);
+ 	return 0;
+ }
+@@ -192,7 +193,7 @@ static int check_eattr_entry(struct gfs2_inode *ip,
+ 			return ask_remove_eattr_entry(sdp, leaf_bh, ea_hdr,
+ 						      ea_hdr_prev, 0, 0);
+ 		} else {
+-			log_debug( _("  Pointers Required: %d\n  Pointers Reported: %d\n"),
++			log_debug( _(" Pointers Required: %d\n  Pointers Reported: %d\n"),
+ 					  max_ptrs, ea_hdr->ea_num_ptrs);
+ 		}
+ 	}
+diff --git a/gfs2/fsck/pass2.c b/gfs2/fsck/pass2.c
+index c0efacc..e67f42a 100644
+--- a/gfs2/fsck/pass2.c
++++ b/gfs2/fsck/pass2.c
+@@ -1315,6 +1315,7 @@ static int check_system_dir(struct gfs2_inode *sysinode, const char *dirname,
+ 				    filename_len))) {
+ 				log_err( _("Unable to zero name string\n"));
+ 				stack;
++				free(filename);
+ 				return -1;
+ 			}
+ 			memcpy(filename, tmp_name, filename_len);
+@@ -1326,6 +1327,7 @@ static int check_system_dir(struct gfs2_inode *sysinode, const char *dirname,
+ 			if (error) {
+ 				log_err(_("Error adding directory %s: %s\n"),
+ 				        filename, strerror(errno));
++				free(filename);
+ 				return -errno;
+ 			}
+ 			if (cur_blks != sysinode->i_di.di_blocks)
+@@ -1445,8 +1447,8 @@ int pass2(struct gfs2_sbd *sdp)
+ 		if (q != gfs2_inode_dir)
+ 			continue;
+ 
+-		log_debug( _("Checking directory inode at block %"PRIu64" (0x%"
+-				  PRIx64 ")\n"), dirblk, dirblk);
++		log_debug( _("Checking directory inode at block %llu (0x%llx)\n"),
++			  (unsigned long long)dirblk, (unsigned long long)dirblk);
+ 
+ 		memset(&ds, 0, sizeof(ds));
+ 		pass2_fxns.private = (void *) &ds;
+@@ -1513,8 +1515,9 @@ int pass2(struct gfs2_sbd *sdp)
+ 		ip = fsck_load_inode(sdp, dirblk);
+ 		if (!ds.dotdir) {
+ 			log_err(_("No '.' entry found for directory inode at "
+-				  "block %"PRIu64" (0x%" PRIx64 ")\n"),
+-				dirblk, dirblk);
++				  "block %llu (0x%llx)\n"),
++				(unsigned long long)dirblk,
++				(unsigned long long)dirblk);
+ 
+ 			if (query( _("Is it okay to add '.' entry? (y/n) "))) {
+ 				uint64_t cur_blks;
+diff --git a/gfs2/fsck/pass5.c b/gfs2/fsck/pass5.c
+index 2540b17..7e85b69 100644
+--- a/gfs2/fsck/pass5.c
++++ b/gfs2/fsck/pass5.c
+@@ -97,7 +97,6 @@ static int gfs2_convert_mark(uint8_t q, uint32_t *count)
+ 	return -1;
+ }
+ 
+-
+ static int check_block_status(struct gfs2_sbd *sdp, char *buffer,
+ 			      unsigned int buflen, uint64_t *rg_block,
+ 			      uint64_t rg_data, uint32_t *count)
+@@ -159,9 +158,10 @@ static int check_block_status(struct gfs2_sbd *sdp, char *buffer,
+ 						(unsigned long long)block,
+ 						(unsigned long long)block);
+ 			} else {
+-				log_info( _("Unlinked block found at block %"
+-					    PRIu64" (0x%" PRIx64 "), left "
+-					    "unchanged.\n"), block, block);
++				log_info( _("Unlinked block found at block %llu"
++					    " (0x%llx), left unchanged.\n"),
++					(unsigned long long)block,
++					(unsigned long long)block);
+ 			}
+ 		} else if (rg_status != block_status) {
+ 			const char *blockstatus[] = {"Free", "Data",
+@@ -185,8 +185,9 @@ static int check_block_status(struct gfs2_sbd *sdp, char *buffer,
+ 				else
+ 					log_err( _("Fixed.\n"));
+ 			} else
+-				log_err( _("Bitmap at block %"PRIu64" (0x%" PRIx64
+-						") left inconsistent\n"), block, block);
++				log_err( _("Bitmap at block %llu (0x%llx) left inconsistent\n"),
++					(unsigned long long)block,
++					(unsigned long long)block);
+ 		}
+ 		(*rg_block)++;
+ 		bit += GFS2_BIT_SIZE;
+@@ -295,7 +296,7 @@ int pass5(struct gfs2_sbd *sdp)
+ 		next = osi_next(n);
+ 		if (skip_this_pass || fsck_abort) /* if asked to skip the rest */
+ 			return FSCK_OK;
+-		log_info( _("Verifying Resource Group #%" PRIu64 "\n"), rg_count);
++		log_info( _("Verifying Resource Group #%llu\n"), (unsigned long long)rg_count);
+ 		memset(count, 0, sizeof(count));
+ 		rgp = (struct rgrp_tree *)n;
+ 
+diff --git a/gfs2/fsck/util.c b/gfs2/fsck/util.c
+index cfcb701..a33e452 100644
+--- a/gfs2/fsck/util.c
++++ b/gfs2/fsck/util.c
+@@ -77,7 +77,8 @@ void warm_fuzzy_stuff(uint64_t block)
+ 			seconds = tv.tv_sec;
+ 			if (last_fs_block) {
+ 				percent = (block * 100) / last_fs_block;
+-				log_notice( _("\r%" PRIu64 " percent complete.\r"), percent);
++				log_notice( _("\r%llu percent complete.\r"),
++					   (unsigned long long)percent);
+ 				fflush(stdout);
+ 			}
+ 		}

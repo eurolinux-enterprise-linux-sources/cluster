@@ -1,0 +1,46 @@
+commit 7b98f01103283f5d925b03d643999b93617299c6
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Fri Mar 8 11:50:56 2013 -0700
+
+    fsck.gfs2: link dinodes that only have extended attribute problems
+    
+    The job of pass1b is to resolve duplicate references to the same block.
+    Eventually it does a fair job of determining the rightful owner of the
+    block, and then it has to deal with the other dinode(s) that referenced
+    the block improperly. If another dinode improperly referenced the block
+    as data or metadata, it's obvious file corruption and the dinode should
+    be deleted. However, if the other dinode improperly referenced the
+    block as an extended attribute, it can fix the situation by removing
+    the extended attributes from the dinode. Prior to this patch, there
+    was a check in the code for this situation so that the dinode was only
+    deleted if the bad block reference was as data or metadata. However,
+    regardless of the situation, the code removed the inode from the
+    inode rbtree. That resulted in the dinode being considered unlinked,
+    so it would get improperly tossed into lost+found and left in a
+    indeterminate state. Subsequent runs of fsck.gfs2 could find the
+    discrepancy and flag it as unlinked again. This patch adds another
+    check so that the inode is not removed from the inode rbtree, so it
+    is linked properly during pass2.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/pass1b.c b/gfs2/fsck/pass1b.c
+index c9e6494..1cc2473 100644
+--- a/gfs2/fsck/pass1b.c
++++ b/gfs2/fsck/pass1b.c
+@@ -519,9 +519,12 @@ static int resolve_dup_references(struct gfs2_sbd *sdp, struct duptree *b,
+ 			  (unsigned long long)id->block_no);
+ 
+ 		ip = fsck_load_inode(sdp, id->block_no);
+-		ii = inodetree_find(ip->i_di.di_num.no_addr);
+-		if (ii)
+-			inodetree_delete(ii);
++		if (id->reftypecount[ref_as_data] ||
++		    id->reftypecount[ref_as_meta]) {
++			ii = inodetree_find(ip->i_di.di_num.no_addr);
++			if (ii)
++				inodetree_delete(ii);
++		}
+ 		clear_dup_fxns.private = (void *) dh;
+ 		/* Clear the EAs for the inode first */
+ 		check_inode_eattr(ip, &clear_dup_fxns);

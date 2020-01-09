@@ -1,0 +1,54 @@
+commit 0d0256d317fe73aa7e5322df91053e2f4d3408af
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Fri Mar 8 09:34:32 2013 -0700
+
+    fsck.gfs2: check leaf depth when validating leaf blocks
+    
+    Now that fsck.gfs2 can validate the hash table is relatively sane
+    without actually reading the leaf blocks, when it does need to read
+    in those leaf blocks, we need to check the leaf depth is
+    appropriate for the (now sane) number of pointers we encountered in
+    the hash table. This patch adds a call to check the leaf depth from
+    pass2.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index e5603d5..1659da0 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -512,6 +512,9 @@ static int check_leaf(struct gfs2_inode *ip, int lindex,
+ 		msg = _("that is not really a leaf");
+ 		goto bad_leaf;
+ 	}
++	if (pass->check_leaf_depth)
++		error = pass->check_leaf_depth(ip, *leaf_no, *ref_count, lbh);
++
+ 	if (pass->check_leaf) {
+ 		error = pass->check_leaf(ip, *leaf_no, pass->private);
+ 		if (error) {
+diff --git a/gfs2/fsck/metawalk.h b/gfs2/fsck/metawalk.h
+index e11b5e0..486c6eb 100644
+--- a/gfs2/fsck/metawalk.h
++++ b/gfs2/fsck/metawalk.h
+@@ -69,6 +69,8 @@ extern int free_block_if_notdup(struct gfs2_inode *ip, uint64_t block,
+  */
+ struct metawalk_fxns {
+ 	void *private;
++	int (*check_leaf_depth) (struct gfs2_inode *ip, uint64_t leaf_no,
++				 int ref_count, struct gfs2_buffer_head *lbh);
+ 	int (*check_leaf) (struct gfs2_inode *ip, uint64_t block,
+ 			   void *private);
+ 	int (*check_metalist) (struct gfs2_inode *ip, uint64_t block,
+diff --git a/gfs2/fsck/pass2.c b/gfs2/fsck/pass2.c
+index 013d3e7..4000610 100644
+--- a/gfs2/fsck/pass2.c
++++ b/gfs2/fsck/pass2.c
+@@ -1429,6 +1429,7 @@ static int pass2_repair_leaf(struct gfs2_inode *ip, uint64_t *leaf_no,
+ 
+ struct metawalk_fxns pass2_fxns = {
+ 	.private = NULL,
++	.check_leaf_depth = check_leaf_depth,
+ 	.check_leaf = NULL,
+ 	.check_metalist = NULL,
+ 	.check_data = NULL,

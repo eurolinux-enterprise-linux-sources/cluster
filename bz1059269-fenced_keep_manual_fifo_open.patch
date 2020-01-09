@@ -1,0 +1,129 @@
+diff --git a/fence/fenced/recover.c b/fence/fenced/recover.c
+index 0b5e2b2..c9786fe 100644
+--- a/fence/fenced/recover.c
++++ b/fence/fenced/recover.c
+@@ -1,6 +1,7 @@
+ #include "fd.h"
+ #include "config.h"
+ 
++
+ void free_node_list(struct list_head *head)
+ {
+ 	struct node *node;
+@@ -80,14 +81,11 @@ static int reduce_victims(struct fd *fd)
+ 	return num_victims;
+ }
+ 
+-static inline void close_override(int *fd, const char *path)
++static inline void close_override(int fd, const char *path)
+ {
+ 	unlink(path);
+-	if (fd) {
+-		if (*fd >= 0)
+-			close(*fd);
+-		*fd = -1;
+-	}
++	if (fd >= 0)
++		close(fd);
+ }
+ 
+ static int open_override(const char *path)
+@@ -339,7 +337,7 @@ void fence_victims(struct fd *fd)
+ {
+ 	struct node *node;
+ 	int error, i, ll, flog_count, prev_flog_count;
+-	int override = -1;
++	int override_fd = -1;
+ 	int cluster_member, cpg_member, ext;
+ 	unsigned int limit, retries;
+ 
+@@ -404,6 +402,9 @@ void fence_victims(struct fd *fd)
+ 		if (!limit)
+ 			log_level(LOG_INFO, "fencing node %s", node->name);
+ 
++		if (override_fd == -1)
++			override_fd = open_override(cfgd_override_path);
++
+ 		query_unlock();
+ 		error = fence_node(node->name, flog, FL_SIZE, &flog_count);
+ 		query_lock();
+@@ -447,7 +448,7 @@ void fence_victims(struct fd *fd)
+ 			continue;
+ 		}
+ 
+-		if (!cfgd_override_path) {
++		if (!cfgd_override_path || (override_fd == -1)) {
+ 			query_unlock();
+ 			sleep(5);
+ 			query_lock();
+@@ -456,22 +457,20 @@ void fence_victims(struct fd *fd)
+ 		}
+ 
+ 		/* Check for manual intervention */
+-		override = open_override(cfgd_override_path);
+-		if (check_override(override, node->name,
+-				   cfgd_override_time) > 0) {
+-			log_level(LOG_WARNING, "fence %s overridden by "
+-				  "administrator intervention", node->name);
++		if (check_override(override_fd, node->name, cfgd_override_time) > 0) {
++			log_level(LOG_WARNING, "fence %s overridden by administrator intervention", node->name);
+ 			node->local_victim_done = 1;
+ 			victim_done(fd, node->nodeid, VIC_DONE_OVERRIDE);
+-			close_override(&override, cfgd_override_path);
+ 			continue;
+ 		} else {
+-			close_override(&override, cfgd_override_path);
+ 			retries++;
+ 			goto retry;
+ 		}
+ 	}
+ 
+ 	fd->current_victim = 0;
++
++	if (override_fd >= 0)
++		close_override(override_fd, cfgd_override_path);
+ }
+ 
+diff --git a/fence/libfenced/main.c b/fence/libfenced/main.c
+index 9537953..319a2d6 100644
+--- a/fence/libfenced/main.c
++++ b/fence/libfenced/main.c
+@@ -3,6 +3,7 @@
+ #include <unistd.h>
+ #include <stdint.h>
+ #include <errno.h>
++#include <fcntl.h>
+ #include <sys/types.h>
+ #include <sys/socket.h>
+ #include <sys/un.h>
+@@ -119,6 +120,19 @@ int fenced_leave(void)
+ 	return rv;
+ }
+ 
++static void local_override(char *name)
++{
++	int fd;
++
++	fd = open("/var/run/cluster/fenced_override", O_WRONLY|O_NONBLOCK);
++	if (fd < 0)
++		return;
++
++	write(fd, name, strlen(name));
++
++	close(fd);
++}
++
+ int fenced_external(char *name)
+ {
+ 	char msg[sizeof(struct fenced_header) + MAX_NODENAME_LEN + 1];
+@@ -143,6 +157,10 @@ int fenced_external(char *name)
+ 
+ 	rv = do_write(fd, hd, sizeof(msg));
+ 	close(fd);
++
++	/* When fenced is busy fencing it won't receive/process messages,
++	   but it does check the local override fifo. */
++	local_override(name);
+  out:
+ 	return rv;
+ }

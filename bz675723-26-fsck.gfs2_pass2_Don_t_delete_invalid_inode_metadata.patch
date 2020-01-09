@@ -1,0 +1,66 @@
+commit 43c29f0c0477427ccf065642a355045ebb95f4bb
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Tue Aug 9 13:01:05 2011 -0500
+
+    fsck.gfs2 pass2: Don't delete invalid inode metadata
+    
+    In pass2, all metadata was deleted for inodes that were marked either
+    "bad" or "invalid" but that is wrong, and here is why:
+    Blocks marked "invalid" were invalidated due to duplicate block references.
+    Pass1b should have already taken care of deleting their metadata, so in pass2
+    we only need to delete the directory entries pointing to them.  We delete the
+    metadata in pass1b because we need to eliminate the inode referencing the
+    duplicate-referenced block from the list of candidates to keep.  So we have a
+    delete-as-we-go policy.  Blocks marked "bad" need to have their entire
+    metadata tree deleted.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/pass2.c b/gfs2/fsck/pass2.c
+index bcd9355..5fe5454 100644
+--- a/gfs2/fsck/pass2.c
++++ b/gfs2/fsck/pass2.c
+@@ -315,6 +315,18 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 
+ 	q = block_type(entryblock);
+ 	/* Get the status of the directory inode */
++	/**
++	 * 1. Blocks marked "invalid" were invalidated due to duplicate
++	 * block references.  Pass1b should have already taken care of deleting
++	 * their metadata, so here we only need to delete the directory entries
++	 * pointing to them.  We delete the metadata in pass1b because we need
++	 * to eliminate the inode referencing the duplicate-referenced block
++	 * from the list of candidates to keep.  So we have a delete-as-we-go
++	 * policy.
++	 *
++	 * 2. Blocks marked "bad" need to have their entire
++	 * metadata tree deleted.
++	*/
+ 	if (q == gfs2_inode_invalid || q == gfs2_bad_block) {
+ 		/* This entry's inode has bad blocks in it */
+ 
+@@ -329,14 +341,16 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 			goto dentry_is_valid;
+ 		}
+ 
+-		if (ip->i_di.di_num.no_addr == entryblock)
+-			entry_ip = ip;
+-		else
+-			entry_ip = fsck_load_inode(sdp, entryblock);
+-		check_inode_eattr(entry_ip, &pass2_fxns_delete);
+-		check_metatree(entry_ip, &pass2_fxns_delete);
+-		if (entry_ip != ip)
+-			fsck_inode_put(&entry_ip);
++		if (q == gfs2_bad_block) {
++			if (ip->i_di.di_num.no_addr == entryblock)
++				entry_ip = ip;
++			else
++				entry_ip = fsck_load_inode(sdp, entryblock);
++			check_inode_eattr(entry_ip, &pass2_fxns_delete);
++			check_metatree(entry_ip, &pass2_fxns_delete);
++			if (entry_ip != ip)
++				fsck_inode_put(&entry_ip);
++		}
+ 		fsck_blockmap_set(ip, entryblock,
+ 				  _("bad directory entry"), gfs2_block_free);
+ 		log_err( _("Inode %lld (0x%llx) was deleted.\n"),

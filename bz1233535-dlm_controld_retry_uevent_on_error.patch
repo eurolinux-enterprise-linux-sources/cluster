@@ -1,0 +1,126 @@
+commit 40b2dfa44ac95304d5e8caafe8e243b8ac75233c
+Author: John Ruemker <jruemker@redhat.com>
+Date:   Wed May 27 10:04:55 2015 -0400
+
+    dlm_controld: Retry uevent recv() and reconnect uevent socket on error
+    
+    When processing a uevent, on ENOBUFS retry up to three times before
+    giving up.  For other errors besides EAGAIN and EINTR, or after the
+    maximum ENOBUFS retries, reconnect the uevent netlink socket.
+
+diff --git a/group/dlm_controld/main.c b/group/dlm_controld/main.c
+index eeab77c..9b60007 100644
+--- a/group/dlm_controld/main.c
++++ b/group/dlm_controld/main.c
+@@ -10,6 +10,7 @@
+ 
+ #define LOCKFILE_NAME	"/var/run/dlm_controld.pid"
+ #define CLIENT_NALLOC	32
++#define MAX_UEVENT_NOBUFS 3
+ 
+ static int client_maxi;
+ static int client_size = 0;
+@@ -290,6 +291,32 @@ const char *dlm_mode_str(int mode)
+ 	return "??";
+ }
+ 
++static int setup_uevent(void)
++{
++	struct sockaddr_nl snl;
++	int s, rv;
++
++	s = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_KOBJECT_UEVENT);
++	if (s < 0) {
++		log_error("uevent netlink socket");
++		return s;
++	}
++
++	memset(&snl, 0, sizeof(snl));
++	snl.nl_family = AF_NETLINK;
++	snl.nl_pid = getpid();
++	snl.nl_groups = 1;
++
++	rv = bind(s, (struct sockaddr *) &snl, sizeof(snl));
++	if (rv < 0) {
++		log_error("uevent bind error %d errno %d", rv, errno);
++		close(s);
++		return rv;
++	}
++
++	return s;
++}
++
+ /* recv "online" (join) and "offline" (leave) 
+    messages from dlm via uevents and pass them on to groupd */
+ 
+@@ -298,7 +325,7 @@ static void process_uevent(int ci)
+ 	struct lockspace *ls;
+ 	char buf[MAXLINE];
+ 	char *argv[MAXARGS], *act, *sys;
+-	int rv, argc = 0;
++	int rv, argc = 0, nobufs = 0;
+ 
+ 	memset(buf, 0, sizeof(buf));
+ 	memset(argv, 0, sizeof(char *) * MAXARGS);
+@@ -306,10 +333,26 @@ static void process_uevent(int ci)
+  retry_recv:
+ 	rv = recv(client[ci].fd, &buf, sizeof(buf), 0);
+ 	if (rv < 0) {
++		log_error("uevent recv error %d errno %d", rv, errno);
+ 		if (errno == EINTR)
+ 			goto retry_recv;
+-		if (errno != EAGAIN)
+-			log_error("uevent recv error %d errno %d", rv, errno);
++		if (errno == ENOBUFS && nobufs < MAX_UEVENT_NOBUFS) {
++			pollfd[ci].revents &= ~POLLERR;
++			nobufs++;
++			goto retry_recv;
++		}	
++		if (errno != EAGAIN) {
++			close(client[ci].fd); 
++			rv = setup_uevent();
++			if (rv < 0) {
++				/* revent error will trigger cleanup by loop */
++				return; 
++			}
++			client[ci].fd = rv;
++			pollfd[ci].fd = rv;
++			pollfd[ci].revents = 0;	
++			log_debug("uevent socket reconnected"); 
++		}
+ 		return;
+ 	}
+ 
+@@ -374,32 +417,6 @@ static void process_uevent(int ci)
+ 			  act, rv, errno);
+ }
+ 
+-static int setup_uevent(void)
+-{
+-	struct sockaddr_nl snl;
+-	int s, rv;
+-
+-	s = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_KOBJECT_UEVENT);
+-	if (s < 0) {
+-		log_error("uevent netlink socket");
+-		return s;
+-	}
+-
+-	memset(&snl, 0, sizeof(snl));
+-	snl.nl_family = AF_NETLINK;
+-	snl.nl_pid = getpid();
+-	snl.nl_groups = 1;
+-
+-	rv = bind(s, (struct sockaddr *) &snl, sizeof(snl));
+-	if (rv < 0) {
+-		log_error("uevent bind error %d errno %d", rv, errno);
+-		close(s);
+-		return rv;
+-	}
+-
+-	return s;
+-}
+-
+ static void init_header(struct dlmc_header *h, int cmd, char *name, int result,
+ 			int extra_len)
+ {

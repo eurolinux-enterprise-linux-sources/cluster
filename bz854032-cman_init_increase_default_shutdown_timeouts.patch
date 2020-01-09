@@ -1,0 +1,49 @@
+commit 31165d9e1a31c058e48ae09255c05748a301cfdb
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Fri Sep 14 14:06:34 2012 +0200
+
+    cman init: increase default shutdown timeouts
+    
+    in some conditions, specially triggered when shutting down all nodes
+    at the same time, corosync takes a lot longer than 10 seconds
+    to stabilize membership. That means that daemons will not quit fast
+    enough before cman init will declare a shutdown error.
+    
+    Increase the default shutdown timeouts from 10 to 30 seconds.
+    
+    Resolves: rhbz#854032
+    
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+    Reviewed-by: Lon Hohberger <lhh@redhat.com>
+
+diff --git a/cman/init.d/cman.in b/cman/init.d/cman.in
+index 4f8db7a..b64bb17 100644
+--- a/cman/init.d/cman.in
++++ b/cman/init.d/cman.in
+@@ -276,7 +276,7 @@ stop_daemon()
+ 	shift
+ 	retryforsec=$1
+ 
+-	[ -z "$retryforsec" ] && retryforsec=1
++	[ -z "$retryforsec" ] && retryforsec=30
+ 	retries=0
+ 
+ 	if check_sleep; then
+@@ -589,7 +589,7 @@ start_qdiskd()
+ 
+ stop_qdiskd()
+ {
+-	stop_daemon qdiskd 5
++	stop_daemon qdiskd
+ }
+ 
+ start_groupd()
+@@ -708,7 +708,7 @@ join_fence_domain()
+ leave_fence_domain()
+ {
+ 	if status fenced > /dev/null 2>&1; then
+-		errmsg=$( fence_tool leave -w 10 2>&1 )
++		errmsg=$( fence_tool leave -w 30 2>&1 )
+ 		return $?
+ 	fi
+ }

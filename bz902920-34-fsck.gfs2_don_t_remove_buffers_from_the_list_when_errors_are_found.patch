@@ -1,0 +1,61 @@
+commit 84d59ca4ac7e0c1479c5a9718f622bcbcbd09adb
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Tue Apr 2 13:03:15 2013 -0700
+
+    fsck.gfs2: don't remove buffers from the list when errors are found
+    
+    Before this patch, if an error was encountered while marking the
+    data blocks, the blocks would be removed from the linked list.
+    Now that we've got "undo" functions, we need to be able to undo
+    the designations of those blocks, which means we need to keep those
+    buffers on the linked list so they're found later. If we don't,
+    the undo data block function won't process them, and therefore they'll
+    be marked as "data" blocks in the bitmap, but no files will reference
+    the blocks (because the error causes the inode to be deleted).
+    With this patch, the metadata that points to the faulty data is kept
+    on the linked list, and after the error is found, the undo function
+    will therefore find it and mark its blocks as "free".
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index 1cd377e..16ddb97 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -1381,7 +1381,7 @@ static int hdr_size(struct gfs2_buffer_head *bh, int height)
+ int check_metatree(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ {
+ 	osi_list_t metalist[GFS2_MAX_META_HEIGHT];
+-	osi_list_t *list;
++	osi_list_t *list, *tmp;
+ 	struct gfs2_buffer_head *bh;
+ 	uint32_t height = ip->i_di.di_height;
+ 	int  i, head_size;
+@@ -1421,23 +1421,16 @@ int check_metatree(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 	if (ip->i_di.di_blocks > COMFORTABLE_BLKS)
+ 		last_reported_fblock = -10000000;
+ 
+-	while (!error && !osi_list_empty(list)) {
++	for (tmp = list->next; !error && tmp != list; tmp = tmp->next) {
+ 		if (fsck_abort) {
+ 			free_metalist(ip, &metalist[0]);
+ 			return 0;
+ 		}
+-		bh = osi_list_entry(list->next, struct gfs2_buffer_head,
+-				    b_altlist);
+-
++		bh = osi_list_entry(tmp, struct gfs2_buffer_head, b_altlist);
+ 		head_size = hdr_size(bh, height);
+-		if (!head_size) {
+-			if (bh == ip->i_bh)
+-				osi_list_del(&bh->b_altlist);
+-			else
+-				brelse(bh);
++		if (!head_size)
+ 			continue;
+-		}
+-
++		
+ 		if (pass->check_data)
+ 			error = check_data(ip, pass, bh, head_size,
+ 					   &blks_checked);

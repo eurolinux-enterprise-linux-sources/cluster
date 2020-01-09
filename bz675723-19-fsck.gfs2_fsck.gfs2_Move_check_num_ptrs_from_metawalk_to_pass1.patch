@@ -1,0 +1,354 @@
+commit 2b9c1cfac56cef5bde3d9941bc5f21027c22b1c8
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Tue Aug 9 09:23:05 2011 -0500
+
+    fsck.gfs2: fsck.gfs2: Move check_num_ptrs from metawalk to pass1
+    
+    This patch moves function check_num_ptrs from metawalk.c to pass1.c
+    and also its helper function fix_leaf_pointers.  This function checks
+    that the number of pointers in a leaf block is a factor of 2, and sane.
+    This should only happen once, when leaf blocks are initially checked.
+    Previously it was wasting a lot of time doing this check from every pass.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index dd0b929..cf75164 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -464,123 +464,6 @@ static void warn_and_patch(struct gfs2_inode *ip, uint64_t *leaf_no,
+ 	*leaf_no = old_leaf;
+ }
+ 
+-/*
+- * fix_leaf_pointers - fix a directory dinode that has a number of pointers
+- *                     that is not a multiple of 2.
+- * dip - the directory inode having the problem
+- * lindex - the index of the leaf right after the problem (need to back up)
+- * cur_numleafs - current (incorrect) number of instances of the leaf block
+- * correct_numleafs - the correct number instances of the leaf block
+- */
+-static int fix_leaf_pointers(struct gfs2_inode *dip, int *lindex,
+-			     int cur_numleafs, int correct_numleafs)
+-{
+-	int count;
+-	char *ptrbuf;
+-	int start_lindex = *lindex - cur_numleafs; /* start of bad ptrs */
+-	int tot_num_ptrs = (1 << dip->i_di.di_depth) - start_lindex;
+-	int bufsize = tot_num_ptrs * sizeof(uint64_t);
+-	int off_by = cur_numleafs - correct_numleafs;
+-
+-	ptrbuf = malloc(bufsize);
+-	if (!ptrbuf) {
+-		log_err( _("Error: Cannot allocate memory to fix the leaf "
+-			   "pointers.\n"));
+-		return -1;
+-	}
+-	/* Read all the pointers, starting with the first bad one */
+-	count = gfs2_readi(dip, ptrbuf, start_lindex * sizeof(uint64_t),
+-			   bufsize);
+-	if (count != bufsize) {
+-		log_err( _("Error: bad read while fixing leaf pointers.\n"));
+-		free(ptrbuf);
+-		return -1;
+-	}
+-
+-	bufsize -= off_by * sizeof(uint64_t); /* We need to write fewer */
+-	/* Write the same pointers, but offset them so they fit within the
+-	   smaller factor of 2. So if we have 12 pointers, write out only
+-	   the last 8 of them.  If we have 7, write the last 4, etc.
+-	   We need to write these starting at the current lindex and adjust
+-	   lindex accordingly. */
+-	count = gfs2_writei(dip, ptrbuf + (off_by * sizeof(uint64_t)),
+-			    start_lindex * sizeof(uint64_t), bufsize);
+-	if (count != bufsize) {
+-		log_err( _("Error: bad read while fixing leaf pointers.\n"));
+-		free(ptrbuf);
+-		return -1;
+-	}
+-	/* Now zero out the hole left at the end */
+-	memset(ptrbuf, 0, off_by * sizeof(uint64_t));
+-	gfs2_writei(dip, ptrbuf, (start_lindex * sizeof(uint64_t)) +
+-		    bufsize, off_by * sizeof(uint64_t));
+-	free(ptrbuf);
+-	*lindex -= off_by; /* adjust leaf index to account for the change */
+-	return 0;
+-}
+-
+-/* check_num_ptrs - check a previously processed leaf's pointer count */
+-static int check_num_ptrs(struct gfs2_inode *ip, uint64_t old_leaf,
+-			  int *ref_count, int *exp_count, int *lindex,
+-			  struct gfs2_leaf *oldleaf)
+-{
+-	int factor = 0, divisor = *ref_count, multiple = 1, error = 0;
+-	struct gfs2_buffer_head *lbh;
+-
+-	/* Check to see if the number of pointers we found is a power of 2.
+-	   It needs to be and if it's not we need to fix it.*/
+-	while (divisor > 1) {
+-		factor++;
+-		divisor /= 2;
+-		multiple = multiple << 1;
+-	}
+-	if (*ref_count != multiple) {
+-		log_err( _("Directory #%llu (0x%llx) has an "
+-			   "invalid number of pointers to "
+-			   "leaf #%llu (0x%llx)\n\tFound: %u, "
+-			   "which is not a factor of 2.\n"),
+-			 (unsigned long long)ip->i_di.di_num.no_addr,
+-			 (unsigned long long)ip->i_di.di_num.no_addr,
+-			 (unsigned long long)old_leaf,
+-			 (unsigned long long)old_leaf, *ref_count);
+-		if (!query( _("Attempt to fix it? (y/n) "))) {
+-			log_err( _("Directory inode was not fixed.\n"));
+-			return 1;
+-		}
+-		error = fix_leaf_pointers(ip, lindex, *ref_count, multiple);
+-		if (error)
+-			return error;
+-		*ref_count = multiple;
+-		log_err( _("Directory inode was fixed.\n"));
+-	}
+-	/* Check to see if the counted number of leaf pointers is what we
+-	   expect. */
+-	if (*ref_count != *exp_count) {
+-		log_err( _("Directory #%llu (0x%llx) has an "
+-			   "incorrect number of pointers to "
+-			   "leaf #%llu (0x%llx)\n\tFound: "
+-			   "%u,  Expected: %u\n"),
+-			 (unsigned long long)ip->i_di.di_num.no_addr,
+-			 (unsigned long long)ip->i_di.di_num.no_addr,
+-			 (unsigned long long)old_leaf,
+-			 (unsigned long long)old_leaf, *ref_count, *exp_count);
+-		if (!query( _("Attempt to fix it? (y/n) "))) {
+-			log_err( _("Directory leaf was not fixed.\n"));
+-			return 1;
+-		}
+-		lbh = bread(ip->i_sbd, old_leaf);
+-		gfs2_leaf_in(oldleaf, lbh);
+-		log_err( _("Leaf depth was %d, changed to %d\n"),
+-			 oldleaf->lf_depth, ip->i_di.di_depth - factor);
+-		oldleaf->lf_depth = ip->i_di.di_depth - factor;
+-		gfs2_leaf_out(oldleaf, lbh);
+-		brelse(lbh);
+-		*exp_count = *ref_count;
+-		log_err( _("Directory leaf was fixed.\n"));
+-	}
+-	return 0;
+-}
+-
+ /* Checks exhash directory entries */
+ static int check_leaf_blks(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ {
+@@ -639,10 +522,14 @@ static int check_leaf_blks(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 		}
+ 
+ 		do {
+-			if (!valid_block(ip->i_sbd, old_leaf) == 0) {
+-				error = check_num_ptrs(ip, old_leaf,
+-						       &ref_count, &exp_count,
+-						       &lindex, &oldleaf);
++			if (fsck_abort)
++				return 0;
++			if (pass->check_num_ptrs &&
++			    valid_block(ip->i_sbd, old_leaf)) {
++				error = pass->check_num_ptrs(ip, old_leaf,
++							     &ref_count,
++							     &lindex,
++							     &oldleaf);
+ 				if (error)
+ 					return error;
+ 			}
+diff --git a/gfs2/fsck/metawalk.h b/gfs2/fsck/metawalk.h
+index d705726..7a8ae4c 100644
+--- a/gfs2/fsck/metawalk.h
++++ b/gfs2/fsck/metawalk.h
+@@ -89,6 +89,9 @@ struct metawalk_fxns {
+ 	int (*finish_eattr_indir) (struct gfs2_inode *ip, int leaf_pointers,
+ 				   int leaf_pointer_errors, void *private);
+ 	void (*big_file_msg) (struct gfs2_inode *ip, uint64_t blks_checked);
++	int (*check_num_ptrs) (struct gfs2_inode *ip, uint64_t leafno,
++			       int *ref_count, int *lindex,
++			       struct gfs2_leaf *leaf);
+ };
+ 
+ #endif /* _METAWALK_H */
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index 271075c..26883d3 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -32,7 +32,7 @@ struct block_count {
+ 	uint64_t ea_count;
+ };
+ 
+-static int leaf(struct gfs2_inode *ip, uint64_t block, void *private);
++static int check_leaf(struct gfs2_inode *ip, uint64_t block, void *private);
+ static int check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 			  struct gfs2_buffer_head **bh, int h, void *private);
+ static int undo_check_metalist(struct gfs2_inode *ip, uint64_t block,
+@@ -57,6 +57,8 @@ static int check_extended_leaf_eattr(struct gfs2_inode *ip, uint64_t *data_ptr,
+ 				     struct gfs2_ea_header *ea_hdr,
+ 				     struct gfs2_ea_header *ea_hdr_prev,
+ 				     void *private);
++static int check_num_ptrs(struct gfs2_inode *ip, uint64_t leafno,
++			  int *ref_count, int *lindex, struct gfs2_leaf *leaf);
+ static int finish_eattr_indir(struct gfs2_inode *ip, int leaf_pointers,
+ 			      int leaf_pointer_errors, void *private);
+ static int invalidate_metadata(struct gfs2_inode *ip, uint64_t block,
+@@ -77,7 +79,7 @@ static int handle_ip(struct gfs2_sbd *sdp, struct gfs2_inode *ip);
+ 
+ struct metawalk_fxns pass1_fxns = {
+ 	.private = NULL,
+-	.check_leaf = leaf,
++	.check_leaf = check_leaf,
+ 	.check_metalist = check_metalist,
+ 	.check_data = check_data,
+ 	.check_eattr_indir = check_eattr_indir,
+@@ -87,6 +89,7 @@ struct metawalk_fxns pass1_fxns = {
+ 	.check_eattr_extentry = check_extended_leaf_eattr,
+ 	.finish_eattr_indir = finish_eattr_indir,
+ 	.big_file_msg = big_file_comfort,
++	.check_num_ptrs = check_num_ptrs,
+ };
+ 
+ struct metawalk_fxns undo_fxns = {
+@@ -197,7 +200,138 @@ struct metawalk_fxns sysdir_fxns = {
+ 	.check_dentry = resuscitate_dentry,
+ };
+ 
+-static int leaf(struct gfs2_inode *ip, uint64_t block, void *private)
++/*
++ * fix_leaf_pointers - fix a directory dinode that has a number of pointers
++ *                     that is not a multiple of 2.
++ * dip - the directory inode having the problem
++ * lindex - the index of the leaf right after the problem (need to back up)
++ * cur_numleafs - current (incorrect) number of instances of the leaf block
++ * correct_numleafs - the correct number instances of the leaf block
++ */
++static int fix_leaf_pointers(struct gfs2_inode *dip, int *lindex,
++			     int cur_numleafs, int correct_numleafs)
++{
++	int count;
++	char *ptrbuf;
++	int start_lindex = *lindex - cur_numleafs; /* start of bad ptrs */
++	int tot_num_ptrs = (1 << dip->i_di.di_depth) - start_lindex;
++	int bufsize = tot_num_ptrs * sizeof(uint64_t);
++	int off_by = cur_numleafs - correct_numleafs;
++
++	ptrbuf = malloc(bufsize);
++	if (!ptrbuf) {
++		log_err( _("Error: Cannot allocate memory to fix the leaf "
++			   "pointers.\n"));
++		return -1;
++	}
++	/* Read all the pointers, starting with the first bad one */
++	count = gfs2_readi(dip, ptrbuf, start_lindex * sizeof(uint64_t),
++			   bufsize);
++	if (count != bufsize) {
++		log_err( _("Error: bad read while fixing leaf pointers.\n"));
++		free(ptrbuf);
++		return -1;
++	}
++
++	bufsize -= off_by * sizeof(uint64_t); /* We need to write fewer */
++	/* Write the same pointers, but offset them so they fit within the
++	   smaller factor of 2. So if we have 12 pointers, write out only
++	   the last 8 of them.  If we have 7, write the last 4, etc.
++	   We need to write these starting at the current lindex and adjust
++	   lindex accordingly. */
++	count = gfs2_writei(dip, ptrbuf + (off_by * sizeof(uint64_t)),
++			    start_lindex * sizeof(uint64_t), bufsize);
++	if (count != bufsize) {
++		log_err( _("Error: bad read while fixing leaf pointers.\n"));
++		free(ptrbuf);
++		return -1;
++	}
++	/* Now zero out the hole left at the end */
++	memset(ptrbuf, 0, off_by * sizeof(uint64_t));
++	gfs2_writei(dip, ptrbuf, (start_lindex * sizeof(uint64_t)) +
++		    bufsize, off_by * sizeof(uint64_t));
++	free(ptrbuf);
++	*lindex -= off_by; /* adjust leaf index to account for the change */
++	return 0;
++}
++
++/**
++ * check_num_ptrs - check a previously processed leaf's pointer count in the
++ *                  hash table.
++ *
++ * The number of pointers in a directory hash table that point to any given
++ * leaf block should always be a factor of two.  The difference between the
++ * leaf block's depth and the dinode's di_depth gives us the factor.
++ * This function makes sure the leaf follows the rules properly.
++ *
++ * ip - pointer to the in-core inode structure
++ * leafno - the leaf number we're operating on
++ * ref_count - the number of pointers to this leaf we actually counted.
++ * exp_count - the number of pointers to this leaf we expect based on
++ *             ip depth minus leaf depth.
++ * lindex - leaf index number
++ * leaf - the leaf structure for the leaf block to check
++ */
++static int check_num_ptrs(struct gfs2_inode *ip, uint64_t leafno,
++			  int *ref_count, int *lindex, struct gfs2_leaf *leaf)
++{
++	int factor = 0, divisor = *ref_count, multiple = 1, error = 0;
++	struct gfs2_buffer_head *lbh;
++	int exp_count;
++
++	/* Check to see if the number of pointers we found is a power of 2.
++	   It needs to be and if it's not we need to fix it.*/
++	while (divisor > 1) {
++		factor++;
++		divisor /= 2;
++		multiple = multiple << 1;
++	}
++	if (*ref_count != multiple) {
++		log_err( _("Directory #%llu (0x%llx) has an invalid number of "
++			   "pointers to leaf #%llu (0x%llx)\n\tFound: %u, "
++			   "which is not a factor of 2.\n"),
++			 (unsigned long long)ip->i_di.di_num.no_addr,
++			 (unsigned long long)ip->i_di.di_num.no_addr,
++			 (unsigned long long)leafno,
++			 (unsigned long long)leafno, *ref_count);
++		if (!query( _("Attempt to fix it? (y/n) "))) {
++			log_err( _("Directory inode was not fixed.\n"));
++			return 1;
++		}
++		error = fix_leaf_pointers(ip, lindex, *ref_count, multiple);
++		if (error)
++			return error;
++		*ref_count = multiple;
++		log_err( _("Directory inode was fixed.\n"));
++	}
++	/* Check to see if the counted number of leaf pointers is what we
++	   expect based on the leaf depth. */
++	exp_count = (1 << (ip->i_di.di_depth - leaf->lf_depth));
++	if (*ref_count != exp_count) {
++		log_err( _("Directory #%llu (0x%llx) has an incorrect number "
++			   "of pointers to leaf #%llu (0x%llx)\n\tFound: "
++			   "%u,  Expected: %u\n"),
++			 (unsigned long long)ip->i_di.di_num.no_addr,
++			 (unsigned long long)ip->i_di.di_num.no_addr,
++			 (unsigned long long)leafno,
++			 (unsigned long long)leafno, *ref_count, exp_count);
++		if (!query( _("Attempt to fix it? (y/n) "))) {
++			log_err( _("Directory leaf was not fixed.\n"));
++			return 1;
++		}
++		lbh = bread(ip->i_sbd, leafno);
++		gfs2_leaf_in(leaf, lbh);
++		log_err( _("Leaf depth was %d, changed to %d\n"),
++			 leaf->lf_depth, ip->i_di.di_depth - factor);
++		leaf->lf_depth = ip->i_di.di_depth - factor;
++		gfs2_leaf_out(leaf, lbh);
++		brelse(lbh);
++		log_err( _("Directory leaf was fixed.\n"));
++	}
++	return 0;
++}
++
++static int check_leaf(struct gfs2_inode *ip, uint64_t block, void *private)
+ {
+ 	struct block_count *bc = (struct block_count *) private;
+ 

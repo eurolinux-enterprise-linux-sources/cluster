@@ -1,0 +1,39 @@
+commit 0eecc716d53b4fae15ad131c5d10c628348e0012
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Tue May 15 16:37:13 2012 +0200
+
+    cman init: add extra documentation for FENCE_JOIN=""
+    
+    Related: rhbz#821016
+    
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+    Reviewed-by: Christine Caulfield <ccaulfie@redhat.com>
+
+diff --git a/cman/init.d/cman.in b/cman/init.d/cman.in
+index f345bcc..f39a9aa 100644
+--- a/cman/init.d/cman.in
++++ b/cman/init.d/cman.in
+@@ -126,6 +126,9 @@ fi
+ #     set to "yes", then the script will attempt to join the fence domain.
+ #     If FENCE_JOIN is set to any other value, the default behavior is
+ #     to join the fence domain (equivalent to "yes").
++#     When setting FENCE_JOIN to "no", it is important to check 
++#     DLM_CONTROLD_OPTS to reflect expected behavior regarding fencing
++#     and quorum.
+ [ -z "$FENCE_JOIN" ] && FENCE_JOIN="yes"
+ 
+ # FENCED_OPTS -- allow extra options to be passed to fence daemon.
+diff --git a/cman/init.d/cman.init.defaults.in b/cman/init.d/cman.init.defaults.in
+index d6d010c..6e7f47f 100644
+--- a/cman/init.d/cman.init.defaults.in
++++ b/cman/init.d/cman.init.defaults.in
+@@ -50,6 +50,9 @@
+ #     set to "yes", then the script will attempt to join the fence domain.
+ #     If FENCE_JOIN is set to any other value, the default behavior is
+ #     to join the fence domain (equivalent to "yes").
++#     When setting FENCE_JOIN to "no", it is important to check
++#     DLM_CONTROLD_OPTS to reflect expected behavior regarding fencing
++#     and quorum.
+ #FENCE_JOIN="yes"
+ 
+ # FENCED_OPTS -- allow extra options to be passed to fence daemon.

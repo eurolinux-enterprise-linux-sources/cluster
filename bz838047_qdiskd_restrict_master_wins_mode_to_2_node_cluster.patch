@@ -1,0 +1,105 @@
+commit 4b893d2a9f46d643859fa50856ac63e0cdbd4a02
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Mon Jul 9 08:33:37 2012 +0200
+
+    qdiskd: restrict master_wins to 2 node cluster
+    
+    given enough mingling of cluster.conf it was possible to
+    break quorum rule #1: there is only one quorum in a cluster at
+    any given time.
+    
+    this change restricts master_wins to 2 node cluster only
+    and provides extra feedback to the user (via logging) on why
+    the mode is disabled.
+    
+    Resolves: rhbz#838047
+    
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+    Reviewed-by: Lon Hohberger <lhh@redhat.com>
+
+diff --git a/cman/man/qdisk.5 b/cman/man/qdisk.5
+index ca974fa..938ed69 100644
+--- a/cman/man/qdisk.5
++++ b/cman/man/qdisk.5
+@@ -297,8 +297,9 @@ and qdiskd's timeout (interval*tko) should be less than half of
+ Totem's token timeout.  See section 3.3.1 for more information.
+ 
+ This option only takes effect if there are no heuristics
+-configured.  Usage of this option in configurations with more than
+-two cluster nodes is undefined and should not be done.
++configured and it is valid only for 2 node cluster.
++This option is automatically disabled if heuristics are
++defined or cluster has more than 2 nodes configured.
+ 
+ In a two-node cluster with no heuristics and no defined vote
+ count (see above), this mode is turned by default.  If enabled in
+diff --git a/cman/qdisk/disk.h b/cman/qdisk/disk.h
+index 6bed41d..1d8f7c8 100644
+--- a/cman/qdisk/disk.h
++++ b/cman/qdisk/disk.h
+@@ -252,6 +252,7 @@ typedef struct {
+ 	int qc_master;		/* Master?! */
+ 	int qc_config;
+ 	int qc_token_timeout;
++	int qc_auto_votes;
+ 	disk_node_state_t qc_disk_status;
+ 	disk_node_state_t qc_status;
+ 	run_flag_t qc_flags;
+diff --git a/cman/qdisk/main.c b/cman/qdisk/main.c
+index 594e9e8..47ef5d2 100644
+--- a/cman/qdisk/main.c
++++ b/cman/qdisk/main.c
+@@ -1495,7 +1495,7 @@ auto_qdisk_votes(int desc)
+ 		logt_print(LOG_ERR, "Unable to determine qdiskd votes "
+ 			   "automatically\n");
+ 	else
+-		logt_print(LOG_DEBUG, "Setting votes to %d\n", ret);
++		logt_print(LOG_DEBUG, "Setting autocalculated votes to %d\n", ret);
+  
+  	return (ret);
+ }
+@@ -1657,6 +1657,8 @@ get_dynamic_config_data(qd_ctx *ctx, int ccsfd)
+ 		ctx->qc_flags &= ~RF_AUTO_VOTES;
+ 	}
+ 
++	ctx->qc_auto_votes = auto_qdisk_votes(ccsfd);
++
+ 	snprintf(query, sizeof(query), "/cluster/quorumd/@votes");
+ 	if (ccs_get(ccsfd, query, &val) == 0) {
+ 		ctx->qc_votes = atoi(val);
+@@ -1664,7 +1666,7 @@ get_dynamic_config_data(qd_ctx *ctx, int ccsfd)
+ 		if (ctx->qc_votes < 0)
+ 			ctx->qc_votes = 0;
+ 	} else {
+-		ctx->qc_votes = auto_qdisk_votes(ccsfd);
++		ctx->qc_votes = ctx->qc_auto_votes;
+ 		if (ctx->qc_votes < 0) {
+ 			if (ctx->qc_config) {
+ 				logt_print(LOG_WARNING, "Unable to determine "
+@@ -1930,15 +1932,21 @@ get_config_data(qd_ctx *ctx, struct h_data *h, int maxh, int *cfh)
+ 	*cfh = configure_heuristics(ccsfd, h, maxh,
+ 				    ctx->qc_interval * (ctx->qc_tko - 1));
+ 
+-	if (*cfh) {
+-		if (ctx->qc_flags & RF_MASTER_WINS) {
+-			logt_print(LOG_WARNING, "Master-wins mode disabled\n");
++	if (ctx->qc_flags & RF_MASTER_WINS) {
++		if (*cfh) {
++			logt_print(LOG_WARNING, "Master-wins mode disabled "
++						"(not compatible with heuristics)\n");
++			ctx->qc_flags &= ~RF_MASTER_WINS;
++		}
++		if (ctx->qc_auto_votes != 1) {
++			logt_print(LOG_WARNING, "Master-wins mode disabled "
++						"(not compatible with more than 2 nodes)\n");
+ 			ctx->qc_flags &= ~RF_MASTER_WINS;
+ 		}
+ 	} else {
+ 		if (ctx->qc_flags & RF_AUTO_VOTES &&
+-		    !(ctx->qc_flags & RF_MASTER_WINS) &&
+-		    ctx->qc_votes == 1) { 
++		    !*cfh &&
++		    ctx->qc_auto_votes == 1) { 
+ 			/* Two node cluster, no heuristics, 1 vote for
+ 			 * quorum disk daemon.  Safe to enable master-wins.
+ 			 * In fact, qdiskd without master-wins in this config

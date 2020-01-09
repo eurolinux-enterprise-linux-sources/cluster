@@ -1,0 +1,39 @@
+From b75e3df94696cdc41a52e4c2ccd7dfd44c9a9d52 Mon Sep 17 00:00:00 2001
+From: Bob Peterson <rpeterso@redhat.com>
+Date: Mon, 17 Dec 2012 14:47:50 -0600
+Subject: [PATCH 2/8] gfs2_convert: mark buffer dirty when switching dirs from
+ meta to data
+
+This patch changes function inode_renumber so that it properly marks
+the rgrp bitmap dirty after switching bits from "meta" to "data".
+This happens when directory leaf, hash table, eattr, etc. blocks come
+in from GFS1 as "meta" and need to be switched to GFS2 as "data".
+In GFS2, only dinodes get the "meta" designation. This conversion was
+taking place, but the code broke out of the loop before properly
+marking the buffer as modified. So if no other modifications were
+done to that bitmap, the bitmap change would be forgotten.
+
+rhbz#888053
+---
+ gfs2/convert/gfs2_convert.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/gfs2/convert/gfs2_convert.c b/gfs2/convert/gfs2_convert.c
+index 2a72504..ee41117 100644
+--- a/gfs2/convert/gfs2_convert.c
++++ b/gfs2/convert/gfs2_convert.c
+@@ -1051,10 +1051,10 @@ static int inode_renumber(struct gfs2_sbd *sbp, uint64_t root_inode_addr, osi_li
+ 							~(0x03 << (GFS2_BIT_SIZE * byte_bit));
+ 						rgd->bh[blk]->b_data[buf_offset + bitmap_byte] |=
+ 							(0x01 << (GFS2_BIT_SIZE * byte_bit));
++						bmodified(rgd->bh[blk]);
+ 						break;
+ 					}
+ 					bitmap_byte -= (sbp->bsize - buf_offset);
+-					bmodified(rgd->bh[blk]);
+ 				}
+ 			}
+ 			brelse(bh);
+-- 
+1.7.11.7
+

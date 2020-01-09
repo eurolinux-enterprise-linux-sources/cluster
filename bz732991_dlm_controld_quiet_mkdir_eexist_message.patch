@@ -1,0 +1,34 @@
+commit 5e5ba6d571d626412249070e4889507145deda51
+Author: David Teigland <teigland@redhat.com>
+Date:   Mon Aug 29 10:47:39 2011 -0500
+
+    dlm_controld: quiet mkdir EEXIST message
+    
+    EEXIST is fine, don't log an error about it
+    
+    bz 732991
+    
+    Signed-off-by: David Teigland <teigland@redhat.com>
+
+diff --git a/group/dlm_controld/action.c b/group/dlm_controld/action.c
+index 65918aa..0570a2f 100644
+--- a/group/dlm_controld/action.c
++++ b/group/dlm_controld/action.c
+@@ -309,13 +309,11 @@ static int create_path(const char *path)
+ 
+ 	old_umask = umask(0022);
+ 	rv = mkdir(path, 0777);
+-	umask(old_umask);
+-
+-	if (rv < 0) {
++	if (rv < 0 && errno == EEXIST)
++		rv = 0;
++	if (rv < 0)
+ 		log_error("%s: mkdir failed: %d", path, errno);
+-		if (errno == EEXIST)
+-			rv = 0;
+-	}
++	umask(old_umask);
+ 	return rv;
+ }
+ 

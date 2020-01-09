@@ -1,0 +1,424 @@
+commit 4b948223f8c314d6624be99ffc63a91736f9b315
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Mon Aug 8 12:46:29 2011 -0500
+
+    fsck.gfs2: Check for blocks wrongly inside resource groups
+    
+    It's not enough to range_check blocks in order to call them valid.
+    We also need to check whether those block collide with resource groups.
+    We don't want a bitmap block to ever be referenced unless it's part of
+    the rgrp and rindex functions.  This patch changes most of the fsck code
+    from doing simple block range checks to doing range checks plus checks
+    for blocks inside the resource groups.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/lost_n_found.c b/gfs2/fsck/lost_n_found.c
+index 988d2ea..1cadab9 100644
+--- a/gfs2/fsck/lost_n_found.c
++++ b/gfs2/fsck/lost_n_found.c
+@@ -95,7 +95,7 @@ int add_inode_to_lf(struct gfs2_inode *ip){
+ 		/* If there's a pre-existing .. directory entry, we have to
+ 		   back out the links. */
+ 		di = dirtree_find(ip->i_di.di_num.no_addr);
+-		if (di && gfs2_check_range(sdp, di->dotdot_parent) == 0) {
++		if (di && !valid_block(sdp, di->dotdot_parent) == 0) {
+ 			struct gfs2_inode *dip;
+ 
+ 			log_debug(_("Directory %lld (0x%llx) already had a "
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index 47412f9..a06bcf2 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -456,7 +456,7 @@ static void warn_and_patch(struct gfs2_inode *ip, uint64_t *leaf_no,
+ 	}
+ 	if (*leaf_no == *bad_leaf ||
+ 	    query( _("Attempt to patch around it? (y/n) "))) {
+-		if (gfs2_check_range(ip->i_sbd, old_leaf) == 0)
++		if (!valid_block(ip->i_sbd, old_leaf) == 0)
+ 			gfs2_put_leaf_nr(ip, pindex, old_leaf);
+ 		else
+ 			gfs2_put_leaf_nr(ip, pindex, first_ok_leaf);
+@@ -606,7 +606,7 @@ static int check_leaf_blks(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 	first_ok_leaf = leaf_no = -1;
+ 	for(lindex = 0; lindex < (1 << ip->i_di.di_depth); lindex++) {
+ 		gfs2_get_leaf_nr(ip, lindex, &leaf_no);
+-		if (gfs2_check_range(ip->i_sbd, leaf_no) == 0) {
++		if (!valid_block(ip->i_sbd, leaf_no) == 0) {
+ 			lbh = bread(sdp, leaf_no);
+ 			/* Make sure it's really a valid leaf block. */
+ 			if (gfs2_check_meta(lbh, GFS2_METATYPE_LF) == 0) {
+@@ -645,7 +645,7 @@ static int check_leaf_blks(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 		}
+ 
+ 		do {
+-			if (gfs2_check_range(ip->i_sbd, old_leaf) == 0) {
++			if (!valid_block(ip->i_sbd, old_leaf) == 0) {
+ 				error = check_num_ptrs(ip, old_leaf,
+ 						       &ref_count, &exp_count,
+ 						       &lindex, &oldleaf);
+@@ -657,7 +657,7 @@ static int check_leaf_blks(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 			if (fsck_abort)
+ 				break;
+ 			/* Make sure the block number is in range. */
+-			if (gfs2_check_range(ip->i_sbd, leaf_no)){
++			if (!valid_block(ip->i_sbd, leaf_no)){
+ 				log_err( _("Leaf block #%llu (0x%llx) is out "
+ 					"of range for directory #%llu (0x%llx"
+ 					").\n"), (unsigned long long)leaf_no,
+@@ -909,7 +909,7 @@ int delete_block(struct gfs2_inode *ip, uint64_t block,
+ 		 struct gfs2_buffer_head **bh, const char *btype,
+ 		 void *private)
+ {
+-	if (gfs2_check_range(ip->i_sbd, block) == 0) {
++	if (!valid_block(ip->i_sbd, block) == 0) {
+ 		fsck_blockmap_set(ip, block, btype, gfs2_block_free);
+ 		return 0;
+ 	}
+@@ -930,7 +930,7 @@ static int delete_block_if_notdup(struct gfs2_inode *ip, uint64_t block,
+ 	uint8_t q;
+ 	struct duptree *d;
+ 
+-	if (gfs2_check_range(ip->i_sbd, block) != 0)
++	if (!valid_block(ip->i_sbd, block) != 0)
+ 		return -EFAULT;
+ 
+ 	q = block_type(block);
+@@ -1189,7 +1189,7 @@ static int build_and_check_metalist(struct gfs2_inode *ip, osi_list_t *mlp,
+ 						   block, block);
+ 					continue;
+ 				}
+-				if (gfs2_check_range(ip->i_sbd, block)) {
++				if (!valid_block(ip->i_sbd, block)) {
+ 					log_debug( _("Skipping invalid block "
+ 						     "%lld (0x%llx)\n"),
+ 						   (unsigned long long)block,
+@@ -1236,7 +1236,7 @@ static int check_data(struct gfs2_inode *ip, struct metawalk_fxns *pass,
+ 		if (skip_this_pass || fsck_abort)
+ 			return error;
+ 		block =  be64_to_cpu(*ptr);
+-		/* It's important that we don't call gfs2_check_range and
++		/* It's important that we don't call !valid_block and
+ 		   bypass calling check_data on invalid blocks because that
+ 		   would defeat the rangecheck_block related functions in
+ 		   pass1. Therefore the individual check_data functions
+@@ -1436,8 +1436,8 @@ int remove_dentry_from_dir(struct gfs2_sbd *sdp, uint64_t dir,
+ 		     " (0x%llx)\n"), (unsigned long long)dentryblock,
+ 		  (unsigned long long)dentryblock,
+ 		  (unsigned long long)dir, (unsigned long long)dir);
+-	if (gfs2_check_range(sdp, dir)) {
+-		log_err( _("Parent directory out of range\n"));
++	if (!valid_block(sdp, dir)) {
++		log_err( _("Parent directory is invalid\n"));
+ 		return 1;
+ 	}
+ 	remove_dentry_fxns.private = &dentryblock;
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index 02305f4..59c7f66 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -120,11 +120,11 @@ static int resuscitate_metalist(struct gfs2_inode *ip, uint64_t block,
+ 	struct block_count *bc = (struct block_count *)private;
+ 
+ 	*bh = NULL;
+-	if (gfs2_check_range(ip->i_sbd, block)){ /* blk outside of FS */
++	if (!valid_block(ip->i_sbd, block)){ /* blk outside of FS */
+ 		fsck_blockmap_set(ip, ip->i_di.di_num.no_addr,
+ 				  _("itself"), gfs2_bad_block);
+-		log_err( _("Bad indirect block pointer (out of range) "
+-			   "found in system inode %lld (0x%llx).\n"),
++		log_err( _("Bad indirect block pointer (invalid or out of "
++			   "range) found in system inode %lld (0x%llx).\n"),
+ 			 (unsigned long long)ip->i_di.di_num.no_addr,
+ 			 (unsigned long long)ip->i_di.di_num.no_addr);
+ 		return 1;
+@@ -164,10 +164,10 @@ static int resuscitate_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 		strncpy(tmp_name, filename, de->de_name_len);
+ 	else
+ 		strncpy(tmp_name, filename, sizeof(tmp_name) - 1);
+-	if (gfs2_check_range(sdp, block)) {
++	if (!valid_block(sdp, block)) {
+ 		log_err( _("Block # referenced by system directory entry %s "
+-			   "in inode %lld (0x%llx) is out of range; "
+-			   "ignored.\n"),
++			   "in inode %lld (0x%llx) is invalid or out of range;"
++			   " ignored.\n"),
+ 			 tmp_name, (unsigned long long)ip->i_di.di_num.no_addr,
+ 			 (unsigned long long)ip->i_di.di_num.no_addr);
+ 		return 0;
+@@ -219,10 +219,10 @@ static int check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 
+ 	*bh = NULL;
+ 
+-	if (gfs2_check_range(ip->i_sbd, block)){ /* blk outside of FS */
++	if (!valid_block(ip->i_sbd, block)){ /* blk outside of FS */
+ 		fsck_blockmap_set(ip, ip->i_di.di_num.no_addr,
+ 				  _("itself"), gfs2_bad_block);
+-		log_debug( _("Bad indirect block pointer (out of range) "
++		log_debug( _("Bad indirect block (invalid/out of range) "
+ 			     "found in inode %lld (0x%llx).\n"),
+ 			   (unsigned long long)ip->i_di.di_num.no_addr,
+ 			   (unsigned long long)ip->i_di.di_num.no_addr);
+@@ -293,7 +293,7 @@ static int undo_check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 
+ 	*bh = NULL;
+ 
+-	if (gfs2_check_range(ip->i_sbd, block)){ /* blk outside of FS */
++	if (!valid_block(ip->i_sbd, block)){ /* blk outside of FS */
+ 		fsck_blockmap_set(ip, ip->i_di.di_num.no_addr,
+ 				  _("itself"), gfs2_block_free);
+ 		return 1;
+@@ -348,9 +348,9 @@ static int check_data(struct gfs2_inode *ip, uint64_t block, void *private)
+ 	uint8_t q;
+ 	struct block_count *bc = (struct block_count *) private;
+ 
+-	if (gfs2_check_range(ip->i_sbd, block)) {
++	if (!valid_block(ip->i_sbd, block)) {
+ 		log_err( _("inode %lld (0x%llx) has a bad data block pointer "
+-			   "%lld (out of range)\n"),
++			   "%lld (invalid or out of range)\n"),
+ 			 (unsigned long long)ip->i_di.di_num.no_addr,
+ 			 (unsigned long long)ip->i_di.di_num.no_addr,
+ 			 (unsigned long long)block);
+@@ -399,12 +399,12 @@ static int undo_check_data(struct gfs2_inode *ip, uint64_t block,
+ 	struct duptree *d;
+ 	struct block_count *bc = (struct block_count *) private;
+ 
+-	if (gfs2_check_range(ip->i_sbd, block)) {
++	if (!valid_block(ip->i_sbd, block)) {
+ 		/* Mark the owner of this block with the bad_block
+ 		 * designator so we know to check it for out of range
+ 		 * blocks later */
+ 		fsck_blockmap_set(ip, ip->i_di.di_num.no_addr,
+-				  _("bad (out of range) data"),
++				  _("bad (invalid or out of range) data"),
+ 				  gfs2_block_free);
+ 		return 1;
+ 	}
+@@ -545,7 +545,7 @@ static int check_eattr_indir(struct gfs2_inode *ip, uint64_t indirect,
+ 
+ 	/* This inode contains an eattr - it may be invalid, but the
+ 	 * eattr attributes points to a non-zero block */
+-	if (gfs2_check_range(sdp, indirect)) {
++	if (!valid_block(sdp, indirect)) {
+ 		/* Doesn't help to mark this here - this gets checked
+ 		 * in pass1c */
+ 		return 1;
+@@ -711,10 +711,10 @@ static int check_extended_leaf_eattr(struct gfs2_inode *ip, uint64_t *data_ptr,
+ 	struct gfs2_buffer_head *bh = NULL;
+ 	int error;
+ 
+-	if (gfs2_check_range(sdp, el_blk)){
++	if (!valid_block(sdp, el_blk)){
+ 		log_err( _("Inode #%llu (0x%llx): Extended Attribute block "
+ 			   "%llu (0x%llx) has an extended leaf block #%llu "
+-			   "(0x%llx) that is out of range.\n"),
++			   "(0x%llx) that is invalid or out of range.\n"),
+ 			 (unsigned long long)ip->i_di.di_num.no_addr,
+ 			 (unsigned long long)ip->i_di.di_num.no_addr,
+ 			 (unsigned long long)ip->i_di.di_eattr,
+@@ -755,9 +755,10 @@ static int check_eattr_leaf(struct gfs2_inode *ip, uint64_t block,
+ 	}
+ 	if (!b || b->block != ip->i_di.di_num.no_addr)
+ 		gfs2_special_add(&sdp->eattr_blocks, ip->i_di.di_num.no_addr);
+-	if (gfs2_check_range(sdp, block)) {
++	if (!valid_block(sdp, block)) {
+ 		log_warn( _("Inode #%llu (0x%llx): Extended Attribute leaf "
+-			    "block #%llu (0x%llx) is out of range.\n"),
++			    "block #%llu (0x%llx) is invalid or out of "
++			    "range.\n"),
+ 			 (unsigned long long)ip->i_di.di_num.no_addr,
+ 			 (unsigned long long)ip->i_di.di_num.no_addr,
+ 			 (unsigned long long)block, (unsigned long long)block);
+@@ -823,15 +824,15 @@ static int mark_block_invalid(struct gfs2_inode *ip, uint64_t block,
+ {
+ 	uint8_t q;
+ 
+-	if (gfs2_check_range(ip->i_sbd, block) != 0)
++	if (!valid_block(ip->i_sbd, block) != 0)
+ 		return -EFAULT;
+ 
+ 	q = block_type(block);
+ 	if (q != gfs2_block_free) {
+ 		add_duplicate_ref(ip, block, reftype, 0, INODE_INVALID);
+ 		log_info( _("%s block %lld (0x%llx), part of inode "
+-			    "%lld (0x%llx), was free so the invalid "
+-			    "reference is ignored.\n"),
++			    "%lld (0x%llx), was previously referenced so "
++			    "the invalid reference is ignored.\n"),
+ 			  btype, (unsigned long long)block,
+ 			  (unsigned long long)block,
+ 			  (unsigned long long)ip->i_di.di_num.no_addr,
+@@ -895,13 +896,13 @@ static int rangecheck_block(struct gfs2_inode *ip, uint64_t block,
+ 	long *bad_pointers = (long *)private;
+ 	uint8_t q;
+ 
+-	if (gfs2_check_range(ip->i_sbd, block) != 0) {
++	if (!valid_block(ip->i_sbd, block) != 0) {
+ 		(*bad_pointers)++;
+-		log_debug( _("Bad %s block pointer (out of range #%ld) "
+-			     "found in inode %lld (0x%llx).\n"), btype,
+-			   *bad_pointers,
+-			   (unsigned long long)ip->i_di.di_num.no_addr,
+-			   (unsigned long long)ip->i_di.di_num.no_addr);
++		log_info( _("Bad %s block pointer (invalid or out of range "
++			    "#%ld) found in inode %lld (0x%llx).\n"),
++			  btype, *bad_pointers,
++			  (unsigned long long)ip->i_di.di_num.no_addr,
++			  (unsigned long long)ip->i_di.di_num.no_addr);
+ 		if ((*bad_pointers) <= BAD_POINTER_TOLERANCE)
+ 			return ENOENT;
+ 		else
+@@ -911,11 +912,12 @@ static int rangecheck_block(struct gfs2_inode *ip, uint64_t block,
+ 	q = block_type(block);
+ 	if (q != gfs2_block_free) {
+ 		(*bad_pointers)++;
+-		log_debug( _("Duplicated %s block pointer (violation #%ld) "
+-			     "found in inode %lld (0x%llx).\n"), btype,
+-			   *bad_pointers,
+-			   (unsigned long long)ip->i_di.di_num.no_addr,
+-			   (unsigned long long)ip->i_di.di_num.no_addr);
++		log_info( _("Duplicated %s block pointer (violation %ld, block"
++			    " %lld (0x%llx)) found in inode %lld (0x%llx).\n"),
++			  btype, *bad_pointers,
++			  (unsigned long long)block, (unsigned long long)block,
++			  (unsigned long long)ip->i_di.di_num.no_addr,
++			  (unsigned long long)ip->i_di.di_num.no_addr);
+ 		if ((*bad_pointers) <= BAD_POINTER_TOLERANCE)
+ 			return ENOENT;
+ 		else
+diff --git a/gfs2/fsck/pass1b.c b/gfs2/fsck/pass1b.c
+index c5a31fa..b4580bf 100644
+--- a/gfs2/fsck/pass1b.c
++++ b/gfs2/fsck/pass1b.c
+@@ -203,7 +203,7 @@ static int clear_dup_metalist(struct gfs2_inode *ip, uint64_t block,
+ 	struct dup_handler *dh = (struct dup_handler *) private;
+ 	struct duptree *d;
+ 
+-	if (gfs2_check_range(ip->i_sbd, block) != 0)
++	if (!valid_block(ip->i_sbd, block) != 0)
+ 		return 0;
+ 
+ 	/* This gets tricky. We're traversing a metadata tree trying to
+diff --git a/gfs2/fsck/pass1c.c b/gfs2/fsck/pass1c.c
+index c6af290..150dc2f 100644
+--- a/gfs2/fsck/pass1c.c
++++ b/gfs2/fsck/pass1c.c
+@@ -75,10 +75,10 @@ static int check_eattr_indir(struct gfs2_inode *ip, uint64_t block,
+ 	uint8_t q;
+ 	struct gfs2_buffer_head *indir_bh = NULL;
+ 
+-	if (gfs2_check_range(sdp, block)) {
++	if (!valid_block(sdp, block)) {
+ 		log_err( _("Extended attributes indirect block #%llu"
+ 			" (0x%llx) for inode #%llu"
+-			" (0x%llx) out of range...removing\n"),
++			" (0x%llx) is invalid...removing\n"),
+ 			(unsigned long long)block,
+ 			(unsigned long long)block,
+ 			(unsigned long long)ip->i_di.di_num.no_addr,
+@@ -89,7 +89,7 @@ static int check_eattr_indir(struct gfs2_inode *ip, uint64_t block,
+ 	if (q != gfs2_indir_blk) {
+ 		log_err( _("Extended attributes indirect block #%llu"
+ 			" (0x%llx) for inode #%llu"
+-			" (0x%llx) invalid.\n"),
++			" (0x%llx) is invalid.\n"),
+ 			(unsigned long long)block,
+ 			(unsigned long long)block,
+ 			(unsigned long long)ip->i_di.di_num.no_addr,
+@@ -110,9 +110,9 @@ static int check_eattr_leaf(struct gfs2_inode *ip, uint64_t block,
+ 	struct gfs2_sbd *sdp = ip->i_sbd;
+ 	uint8_t q;
+ 
+-	if (gfs2_check_range(sdp, block)) {
++	if (!valid_block(sdp, block)) {
+ 		log_err( _("Extended attributes block for inode #%llu"
+-			" (0x%llx) out of range.\n"),
++			" (0x%llx) is invalid.\n"),
+ 			(unsigned long long)ip->i_di.di_num.no_addr,
+ 			(unsigned long long)ip->i_di.di_num.no_addr);
+ 		return ask_remove_eattr(ip);
+diff --git a/gfs2/fsck/pass2.c b/gfs2/fsck/pass2.c
+index af26988..de91a0d 100644
+--- a/gfs2/fsck/pass2.c
++++ b/gfs2/fsck/pass2.c
+@@ -197,9 +197,9 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 	else
+ 		strncpy(tmp_name, filename, MAX_FILENAME - 1);
+ 
+-	if (gfs2_check_range(ip->i_sbd, entryblock)) {
++	if (!valid_block(ip->i_sbd, entryblock)) {
+ 		log_err( _("Block # referenced by directory entry %s in inode "
+-			   "%lld (0x%llx) is out of range\n"),
++			   "%lld (0x%llx) is invalid\n"),
+ 			 tmp_name, (unsigned long long)ip->i_di.di_num.no_addr,
+ 			 (unsigned long long)ip->i_di.di_num.no_addr);
+ 		if (query( _("Clear directory entry to out of range block? "
+diff --git a/gfs2/fsck/rgrepair.c b/gfs2/fsck/rgrepair.c
+index 1bddacf..52cc529 100644
+--- a/gfs2/fsck/rgrepair.c
++++ b/gfs2/fsck/rgrepair.c
+@@ -706,7 +706,7 @@ static int expect_rindex_sanity(struct gfs2_sbd *sdp, osi_list_t *ret_list,
+ 	osi_list_t *tmp;
+ 	struct rgrp_list *exp, *rgd; /* expected, actual */
+ 
+-	*num_rgs = sdp->md.riinode->i_di.di_size / sizeof(struct gfs2_rindex);
++	*num_rgs = sdp->md.riinode->i_di.di_size / sizeof(struct gfs2_rindex) ;
+ 	osi_list_init(ret_list);
+ 	for (tmp = sdp->rglist.next; tmp != &sdp->rglist; tmp = tmp->next) {
+ 		rgd = osi_list_entry(tmp, struct rgrp_list, list);
+diff --git a/gfs2/fsck/util.c b/gfs2/fsck/util.c
+index 2645a55..b71fc98 100644
+--- a/gfs2/fsck/util.c
++++ b/gfs2/fsck/util.c
+@@ -201,7 +201,7 @@ int add_duplicate_ref(struct gfs2_inode *ip, uint64_t block,
+ 	struct inode_with_dups *id, *found_id;
+ 	struct duptree *dt;
+ 
+-	if (gfs2_check_range(ip->i_sbd, block) != 0)
++	if (!valid_block(ip->i_sbd, block) != 0)
+ 		return 0;
+ 	/* If this is not the first reference (i.e. all calls from pass1) we
+ 	   need to create the duplicate reference. If this is pass1b, we want
+diff --git a/gfs2/libgfs2/fs_bits.c b/gfs2/libgfs2/fs_bits.c
+index 38ef92c..b39effe 100644
+--- a/gfs2/libgfs2/fs_bits.c
++++ b/gfs2/libgfs2/fs_bits.c
+@@ -143,7 +143,24 @@ int gfs2_check_range(struct gfs2_sbd *sdp, uint64_t blkno)
+ }
+ 
+ /*
+- * fs_set_bitmap
++ * valid_block - check if blkno is valid and not part of our rgrps or bitmaps
++ * @sdp: super block
++ * @blkno: block number
++ *
++ * Returns: 1 if ok, 0 if out of bounds
++ */
++int valid_block(struct gfs2_sbd *sdp, uint64_t blkno)
++{
++	if((blkno > sdp->fssize) || (blkno <= sdp->sb_addr))
++		return 0;
++	/* Check if the block is one of our rgrp or bitmap blocks */
++	if (gfs2_get_bitmap(sdp, blkno, NULL) < 0)
++		return 0;
++	return 1;
++}
++
++/*
++ * gfs2_set_bitmap
+  * @sdp: super block
+  * @blkno: block number relative to file system
+  * @state: one of three possible states
+diff --git a/gfs2/libgfs2/libgfs2.h b/gfs2/libgfs2/libgfs2.h
+index c7d5977..0ddb48f 100644
+--- a/gfs2/libgfs2/libgfs2.h
++++ b/gfs2/libgfs2/libgfs2.h
+@@ -406,6 +406,7 @@ extern uint32_t gfs2_blkalloc_internal(struct rgrp_list *rgd, uint32_t goal,
+ extern int gfs2_check_range(struct gfs2_sbd *sdp, uint64_t blkno);
+ 
+ /* functions with blk #'s that are file system relative */
++extern int valid_block(struct gfs2_sbd *sdp, uint64_t blkno);
+ extern int gfs2_get_bitmap(struct gfs2_sbd *sdp, uint64_t blkno,
+ 			   struct rgrp_list *rgd);
+ extern int gfs2_set_bitmap(struct gfs2_sbd *sdp, uint64_t blkno, int state);

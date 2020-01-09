@@ -1,0 +1,277 @@
+commit dcbe98785dec9af82e198175016197044b03d19d
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Wed Apr 3 08:55:00 2013 -0700
+
+    fsck.gfs2: standardize check_metatree return codes
+    
+    This patch aims to not change functionality at all. What it does is
+    adds a standard set of three return codes with the following meanings:
+    
+    meta_is_good - all is well, keep processing metadata normally
+    meta_skip_further - an non-fatal error occurred, so further metadata
+                        processing for this inode should be skipped.
+    meta_error - a fatal error occurred in this metadata, so we need to
+                 abort processing.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index a9fce81..7ce8524 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -994,9 +994,9 @@ int free_block_if_notdup(struct gfs2_inode *ip, uint64_t block,
+ {
+ 	if (!find_remove_dup(ip, block, btype)) { /* not a dup */
+ 		fsck_blockmap_set(ip, block, btype, gfs2_block_free);
+-		return 1;
++		return meta_skip_further;
+ 	}
+-	return 0;
++	return meta_is_good;
+ }
+ 
+ /**
+@@ -1013,7 +1013,7 @@ static int delete_block_if_notdup(struct gfs2_inode *ip, uint64_t block,
+ 	uint8_t q;
+ 
+ 	if (!valid_block(ip->i_sbd, block))
+-		return -EFAULT;
++		return meta_error;
+ 
+ 	q = block_type(block);
+ 	if (q == gfs2_block_free) {
+@@ -1023,7 +1023,7 @@ static int delete_block_if_notdup(struct gfs2_inode *ip, uint64_t block,
+ 			  (unsigned long long)block,
+ 			  (unsigned long long)ip->i_di.di_num.no_addr,
+ 			  (unsigned long long)ip->i_di.di_num.no_addr);
+-		return 0;
++		return meta_is_good;
+ 	}
+ 	return free_block_if_notdup(ip, block, btype);
+ }
+@@ -1253,12 +1253,12 @@ static int build_and_check_metalist(struct gfs2_inode *ip, osi_list_t *mlp,
+ 							   pass->private);
+ 				/* check_metalist should hold any buffers
+ 				   it gets with "bread". */
+-				if (err < 0) {
++				if (err == meta_error) {
+ 					stack;
+ 					error = err;
+ 					return error;
+ 				}
+-				if (err > 0) {
++				if (err == meta_skip_further) {
+ 					if (!error)
+ 						error = err;
+ 					log_debug( _("Skipping block %llu (0x%llx)\n"),
+@@ -1658,7 +1658,7 @@ static int alloc_metalist(struct gfs2_inode *ip, uint64_t block,
+ 			  (unsigned long long)block);
+ 		gfs2_blockmap_set(bl, block, gfs2_indir_blk);
+ 	}
+-	return 0;
++	return meta_is_good;
+ }
+ 
+ static int alloc_data(struct gfs2_inode *ip, uint64_t metablock,
+diff --git a/gfs2/fsck/metawalk.h b/gfs2/fsck/metawalk.h
+index 2ba0d72..49217cc 100644
+--- a/gfs2/fsck/metawalk.h
++++ b/gfs2/fsck/metawalk.h
+@@ -56,6 +56,12 @@ extern int free_block_if_notdup(struct gfs2_inode *ip, uint64_t block,
+ #define fsck_blockmap_set(ip, b, bt, m) _fsck_blockmap_set(ip, b, bt, m, \
+ 							   __FUNCTION__, __LINE__)
+ 
++enum meta_check_rc {
++	meta_error = -1,
++	meta_is_good = 0,
++	meta_skip_further = 1,
++};
++
+ /* metawalk_fxns: function pointers to check various parts of the fs
+  *
+  * The functions should return -1 on fatal errors, 1 if the block
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index 0cf4373..ffa36b9 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -138,14 +138,14 @@ static int resuscitate_metalist(struct gfs2_inode *ip, uint64_t block,
+ 			   "range) found in system inode %lld (0x%llx).\n"),
+ 			 (unsigned long long)ip->i_di.di_num.no_addr,
+ 			 (unsigned long long)ip->i_di.di_num.no_addr);
+-		return 1;
++		return meta_skip_further;
+ 	}
+ 	if (fsck_system_inode(ip->i_sbd, block))
+ 		fsck_blockmap_set(ip, block, _("system file"), gfs2_indir_blk);
+ 	else
+ 		check_n_fix_bitmap(ip->i_sbd, block, gfs2_indir_blk);
+ 	bc->indir_count++;
+-	return 0;
++	return meta_is_good;
+ }
+ 
+ /*
+@@ -262,7 +262,7 @@ static int check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 			   (unsigned long long)ip->i_di.di_num.no_addr,
+ 			   (unsigned long long)ip->i_di.di_num.no_addr);
+ 
+-		return 1;
++		return meta_skip_further;
+ 	}
+ 	if (is_dir(&ip->i_di, ip->i_sbd->gfs1) && h == ip->i_di.di_height) {
+ 		iblk_type = GFS2_METATYPE_JD;
+@@ -299,7 +299,7 @@ static int check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 					  gfs2_meta_inval);
+ 			brelse(nbh);
+ 			nbh = NULL;
+-			return 1;
++			return meta_skip_further;
+ 		}
+ 		brelse(nbh);
+ 		nbh = NULL;
+@@ -313,12 +313,12 @@ static int check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 			nbh = NULL;
+ 			*bh = NULL;
+ 		}
+-		return 1; /* don't process the metadata again */
++		return meta_skip_further; /* don't process the metadata again */
+ 	} else
+ 		fsck_blockmap_set(ip, block, _("indirect"),
+ 				  gfs2_indir_blk);
+ 
+-	return 0;
++	return meta_is_good;
+ }
+ 
+ /* undo_reference - undo previously processed data or metadata
+@@ -824,7 +824,7 @@ static int mark_block_invalid(struct gfs2_inode *ip, uint64_t block,
+ 	 * and as a result, they'll be freed when this dinode is deleted,
+ 	 * despite being used by another dinode as a valid block. */
+ 	if (!valid_block(ip->i_sbd, block))
+-		return 0;
++		return meta_is_good;
+ 
+ 	q = block_type(block);
+ 	if (q != gfs2_block_free) {
+@@ -836,10 +836,10 @@ static int mark_block_invalid(struct gfs2_inode *ip, uint64_t block,
+ 			  (unsigned long long)block,
+ 			  (unsigned long long)ip->i_di.di_num.no_addr,
+ 			  (unsigned long long)ip->i_di.di_num.no_addr);
+-		return 0;
++		return meta_is_good;
+ 	}
+ 	fsck_blockmap_set(ip, block, btype, gfs2_meta_inval);
+-	return 0;
++	return meta_is_good;
+ }
+ 
+ static int invalidate_metadata(struct gfs2_inode *ip, uint64_t block,
+@@ -909,9 +909,9 @@ static int rangecheck_block(struct gfs2_inode *ip, uint64_t block,
+ 			  (unsigned long long)ip->i_di.di_num.no_addr,
+ 			  (unsigned long long)ip->i_di.di_num.no_addr);
+ 		if ((*bad_pointers) <= BAD_POINTER_TOLERANCE)
+-			return ENOENT;
++			return meta_skip_further;
+ 		else
+-			return -ENOENT; /* Exits check_metatree quicker */
++			return meta_error; /* Exits check_metatree quicker */
+ 	}
+ 	/* See how many duplicate blocks it has */
+ 	q = block_type(block);
+@@ -924,11 +924,11 @@ static int rangecheck_block(struct gfs2_inode *ip, uint64_t block,
+ 			  (unsigned long long)ip->i_di.di_num.no_addr,
+ 			  (unsigned long long)ip->i_di.di_num.no_addr);
+ 		if ((*bad_pointers) <= BAD_POINTER_TOLERANCE)
+-			return ENOENT;
++			return meta_skip_further;
+ 		else
+-			return -ENOENT; /* Exits check_metatree quicker */
++			return meta_error; /* Exits check_metatree quicker */
+ 	}
+-	return 0;
++	return meta_is_good;
+ }
+ 
+ static int rangecheck_metadata(struct gfs2_inode *ip, uint64_t block,
+diff --git a/gfs2/fsck/pass1b.c b/gfs2/fsck/pass1b.c
+index 7680bc1..03e47ec 100644
+--- a/gfs2/fsck/pass1b.c
++++ b/gfs2/fsck/pass1b.c
+@@ -213,7 +213,7 @@ static int clear_dup_metalist(struct gfs2_inode *ip, uint64_t block,
+ 	struct duptree *dt;
+ 
+ 	if (!valid_block(ip->i_sbd, block))
+-		return 0;
++		return meta_is_good;
+ 
+ 	/* This gets tricky. We're traversing a metadata tree trying to
+ 	   delete an inode based on it having a duplicate block reference
+@@ -229,7 +229,7 @@ static int clear_dup_metalist(struct gfs2_inode *ip, uint64_t block,
+ 	if (!dt) {
+ 		fsck_blockmap_set(ip, block, _("no longer valid"),
+ 				  gfs2_block_free);
+-		return 0;
++		return meta_is_good;
+ 	}
+ 	/* This block, having failed the above test, is duplicated somewhere */
+ 	if (block == dh->dt->block) {
+@@ -251,7 +251,7 @@ static int clear_dup_metalist(struct gfs2_inode *ip, uint64_t block,
+ 	   be mistakenly freed as "no longer valid" (in this function above)
+ 	   even though it's valid metadata for a different inode. Returning
+ 	   1 ensures that the metadata isn't processed again. */
+-	return 1;
++	return meta_skip_further;
+ }
+ 
+ static int clear_dup_data(struct gfs2_inode *ip, uint64_t metablock,
+diff --git a/gfs2/fsck/util.c b/gfs2/fsck/util.c
+index 78d4e79..2111684 100644
+--- a/gfs2/fsck/util.c
++++ b/gfs2/fsck/util.c
+@@ -234,19 +234,19 @@ int add_duplicate_ref(struct gfs2_inode *ip, uint64_t block,
+ 	struct duptree *dt;
+ 
+ 	if (!valid_block(ip->i_sbd, block))
+-		return 0;
++		return meta_is_good;
+ 	/* If this is not the first reference (i.e. all calls from pass1) we
+ 	   need to create the duplicate reference. If this is pass1b, we want
+ 	   to ignore references that aren't found. */
+ 	dt = gfs2_dup_set(block, !first);
+ 	if (!dt)        /* If this isn't a duplicate */
+-		return 0;
++		return meta_is_good;
+ 
+ 	/* If we found the duplicate reference but we've already discovered
+ 	   the first reference (in pass1b) and the other references in pass1,
+ 	   we don't need to count it, so just return. */
+ 	if (dt->first_ref_found)
+-		return 0;
++		return meta_is_good;
+ 
+ 	/* The first time this is called from pass1 is actually the second
+ 	   reference.  When we go back in pass1b looking for the original
+@@ -268,12 +268,12 @@ int add_duplicate_ref(struct gfs2_inode *ip, uint64_t block,
+ 		if (!(id = malloc(sizeof(*id)))) {
+ 			log_crit( _("Unable to allocate "
+ 				    "inode_with_dups structure\n"));
+-			return -1;
++			return meta_error;
+ 		}
+ 		if (!(memset(id, 0, sizeof(*id)))) {
+ 			log_crit( _("Unable to zero inode_with_dups "
+ 				    "structure\n"));
+-			return -1;
++			return meta_error;
+ 		}
+ 		id->block_no = ip->i_di.di_num.no_addr;
+ 		q = block_type(ip->i_di.di_num.no_addr);
+@@ -307,7 +307,7 @@ int add_duplicate_ref(struct gfs2_inode *ip, uint64_t block,
+ 	else
+ 		log_info( _("This brings the total to: %d duplicate "
+ 			    "references\n"), dt->refs);
+-	return 0;
++	return meta_is_good;
+ }
+ 
+ struct dir_info *dirtree_insert(struct gfs2_inum inum)

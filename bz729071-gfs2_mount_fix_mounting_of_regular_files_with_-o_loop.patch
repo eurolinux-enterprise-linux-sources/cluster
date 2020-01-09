@@ -1,0 +1,100 @@
+commit db4e72fc23571c63de3e2475d6380990525fcce9
+Author: Andrew Price <anprice@redhat.com>
+Date:   Wed Aug 17 16:38:18 2011 +0100
+
+    mount.gfs2: Fix mounting of regular files with -o loop
+    
+    When we use -o loop, mount(8) sets up the loop device and passes
+    loop=/dev/loopN to mount.gfs2, which currently naively passes this option to
+    mount(2). As gfs2 doesn't recognise the loop option, mounting fails with
+    EINVAL.
+    
+    This patch stops mount.gfs2 from passing loop=/dev/loopN to mount(2) to fix
+    this problem and also makes sure this option appears in /etc/mtab so that
+    umount(8) can automatically free up the loop device on unmount.
+    
+    rhbz#729071
+    
+    Signed-off-by: Andrew Price <anprice@redhat.com>
+    Reviewed-by: Steven Whitehouse <swhiteho@redhat.com>
+
+diff --git a/gfs2/mount/util.c b/gfs2/mount/util.c
+index 5a1f999..3884389 100644
+--- a/gfs2/mount/util.c
++++ b/gfs2/mount/util.c
+@@ -150,6 +150,16 @@ void parse_opts(struct mount_options *mo)
+ 			continue;
+ 		}
+ 
++		/* mount(8) will have already set up the loop device for us so
++		   we can safely ignore the loop= option it provides and avoid
++		   getting an EINVAL from gfs2. However, we still need to make
++		   sure the option appears in mtab so that umount(8) can
++		   automatically free up the loop device. */
++		if (!strncmp("loop", o, 4)) {
++			strncpy(mo->loopopt, o, PATH_MAX);
++			continue;
++		}
++
+ 		if (extra_len + 1 + strlen(o) > PATH_MAX)
+ 			die("extra options string is too long\n");
+ 
+@@ -261,6 +271,8 @@ void read_proc_mounts(struct mount_options *mo)
+ 	char save_opts[PATH_MAX];
+ 	char save_device[PATH_MAX];
+ 	int found = 0;
++	int freq = 0;
++	int passno = 0;
+ 	struct stat st_mo_dev, st_mounts_dev;
+ 
+ 	file = fopen("/proc/mounts", "r");
+@@ -274,8 +286,14 @@ void read_proc_mounts(struct mount_options *mo)
+ 	}
+ 
+ 	while (fgets(line, PATH_MAX, file)) {
+-		if (sscanf(line, "%s %s %s %s", device, path, type, opts) != 4)
+-			continue;
++		if (mo->loopopt[0] == '\0') {
++			if (sscanf(line, "%s %s %s %s", device, path, type, opts) != 4)
++				continue;
++		} else {
++			if (sscanf(line, "%s %s %s %s %d %d",
++			           device, path, type, opts, &freq, &passno) != 6)
++				continue;
++		}
+ 		if (strcmp(path, mo->dir)) {
+ 			if (!strchr(path, '\\'))
+ 				continue;
+@@ -301,7 +319,11 @@ void read_proc_mounts(struct mount_options *mo)
+ 
+ 		strncpy(save_device, device, PATH_MAX);
+ 		strncpy(save_opts, opts, PATH_MAX);
+-		strncpy(save_line, line, PATH_MAX);
++		if (mo->loopopt[0] != '\0')
++			snprintf(save_line, PATH_MAX, "%s %s %s %s,%s %d %d\n",
++			         device, path, type, opts, mo->loopopt, freq, passno);
++		else
++			strncpy(save_line, line, PATH_MAX);
+ 		found = 1;
+ 	}
+ 
+@@ -318,6 +340,7 @@ void read_proc_mounts(struct mount_options *mo)
+ 	log_debug("read_proc_mounts: device = \"%s\"", mo->specified_dev);
+ 	log_debug("read_proc_mounts: dm device = \"%s\"", mo->dev);
+ 	log_debug("read_proc_mounts: opts = \"%s\"", mo->opts);
++	log_debug("read_proc_mounts: proc_entry = \"%s\"", mo->proc_entry);
+ }
+ 
+ static void gfs2_inum_in(struct gfs2_inum *no, char *buf)
+diff --git a/gfs2/mount/util.h b/gfs2/mount/util.h
+index e866cd4..8b05aa5 100644
+--- a/gfs2/mount/util.h
++++ b/gfs2/mount/util.h
+@@ -50,6 +50,7 @@ struct mount_options {
+ 	char dev[PATH_MAX+1];
+ 	char dir[PATH_MAX+1];
+ 	char opts[PATH_MAX+1];
++	char loopopt[PATH_MAX+1];
+ 	char hostdata[PATH_MAX+1];
+ 	char extra[PATH_MAX+1];
+ 	char extra_plus[PATH_MAX+1];

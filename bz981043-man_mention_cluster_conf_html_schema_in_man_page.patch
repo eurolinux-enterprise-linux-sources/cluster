@@ -1,0 +1,14 @@
+diff --git a/config/man/cluster.conf.5 b/config/man/cluster.conf.5
+index ad2cfee..a134afd 100644
+--- a/config/man/cluster.conf.5
++++ b/config/man/cluster.conf.5
+@@ -31,6 +31,9 @@ structure will cause the cluster startup to fail.  See
+ and
+ .BR ccs_config_dump (8).
+ 
++A list of the valid items for your installed cluster version is held in the file /usr/share/doc/cman-<version>/cluster_conf.html .
++
++
+ .SS Cluster
+ The top level
+ .B cluster

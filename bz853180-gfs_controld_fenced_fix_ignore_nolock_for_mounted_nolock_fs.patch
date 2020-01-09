@@ -1,0 +1,76 @@
+commit 6b7602b0f65268e2f09c87a314cda3947d839b35
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Thu Aug 30 11:36:43 2012 -0500
+
+    gfs_controld, fenced: fix ignore_nolock for mounted nolock fs
+    
+    kernel now shows lock_module/proto_name for
+    lock_nolock, so fix the check.
+    
+    bz 853180
+    
+    Signed-off-by: Bob Peterson <rpeterso@redhat.com>
+    Signed-off-by: David Teigland <teigland@redhat.com>
+
+diff --git a/fence/fenced/main.c b/fence/fenced/main.c
+index cc11382..827dab6 100644
+--- a/fence/fenced/main.c
++++ b/fence/fenced/main.c
+@@ -636,7 +636,8 @@ static void register_controlled_dir(const char *path)
+ static int ignore_nolock(char *sysfs_dir, char *table)
+ {
+ 	char path[PATH_MAX];
+-	int fd;
++	char buf[32];
++	int fd, rv;
+ 
+ 	memset(path, 0, PATH_MAX);
+ 
+@@ -650,7 +651,16 @@ static int ignore_nolock(char *sysfs_dir, char *table)
+ 	if (fd < 0)
+ 		return 1;
+ 
++	memset(buf, 0, sizeof(buf));
++
++	rv = read(fd, buf, sizeof(buf));
+ 	close(fd);
++	if (rv < 0)
++		return 1;
++
++	if (!strncmp(buf, "lock_nolock", 11))
++		return 1;
++
+ 	return 0;
+ }
+ 
+diff --git a/group/gfs_controld/util.c b/group/gfs_controld/util.c
+index 7aea26e..80e2bf7 100644
+--- a/group/gfs_controld/util.c
++++ b/group/gfs_controld/util.c
+@@ -217,7 +217,8 @@ void update_dmsetup_wait(void)
+ static int ignore_nolock(const char *sysfs_dir, char *table)
+ {
+ 	char path[PATH_MAX];
+-	int fd;
++	char buf[32];
++	int fd, rv;
+ 
+ 	memset(path, 0, PATH_MAX);
+ 
+@@ -231,7 +232,16 @@ static int ignore_nolock(const char *sysfs_dir, char *table)
+ 	if (fd < 0)
+ 		return 1;
+ 
++	memset(buf, 0, sizeof(buf));
++
++	rv = read(fd, buf, sizeof(buf));
+ 	close(fd);
++	if (rv < 0)
++		return 1;
++
++	if (!strncmp(buf, "lock_nolock", 11))
++		return 1;
++
+ 	return 0;
+ }
+ 

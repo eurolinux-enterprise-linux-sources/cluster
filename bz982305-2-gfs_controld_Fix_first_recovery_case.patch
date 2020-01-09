@@ -1,0 +1,59 @@
+commit 72619738e20e2627a7e5fc3268b003d33ce699b2
+Author: David Teigland <teigland@redhat.com>
+Date:   Tue Jul 9 11:35:25 2013 -0500
+
+    gfs_controld: fix first recovery case
+    
+    - node A is doing first recovery
+    - node B joins the mount group and is waiting for A to finish
+    - node A sets some journals X and Y as needing recovery based
+      on start message from A (it's not clear how/why A has journals
+      X,Y marked as needing recovery if it's doing first recovery.)
+    - node A fails
+    - node B marks A's journal as needing recovery
+    - node B takes over doing first recovery
+    - node B successfully finishes first recovery
+    - node B still has X,Y,A journals as needing recovery, which
+      prevents the mount group recovery from completing
+    
+    First mount recovery allows the first mounter to recover all
+    journals without any other nodes present.  This is meant to
+    guarantee that all journals are clean when first mount recovery
+    is done.  So, after B completes first mount recovery it should
+    assume all journals are clean and it should clear any needs
+    recovery indication on journals.
+    
+    bz 982305
+    
+    Signed-off-by: David Teigland <teigland@redhat.com>
+
+diff --git a/group/gfs_controld/cpg-new.c b/group/gfs_controld/cpg-new.c
+index 537624d..8943f62 100644
+--- a/group/gfs_controld/cpg-new.c
++++ b/group/gfs_controld/cpg-new.c
+@@ -2304,8 +2304,8 @@ void process_recovery_uevent(char *name, int jid, int recover_status,
+ 		   to check below that we've seen uevents for all jids
+ 		   during first recovery before sending first_recovery_done. */
+ 
+-		log_group(mg, "recovery_uevent jid %d first recovery done %d",
+-			  jid, mg->first_done_uevent);
++		log_group(mg, "recovery_uevent jid %d status %d first recovery done %d",
++			  jid, recover_status, mg->first_done_uevent);
+ 
+ 		/* ignore extraneous uevent from others_may_mount */
+ 		if (mg->first_done_uevent)
+@@ -2323,6 +2323,14 @@ void process_recovery_uevent(char *name, int jid, int recover_status,
+ 		if (first_done) {
+ 			log_group(mg, "recovery_uevent first_done");
+ 			mg->first_done_uevent = 1;
++
++			list_for_each_entry(j, &mg->journals, list) {
++				if (!j->needs_recovery)
++					continue;
++				j->needs_recovery = 0;
++				log_debug("recovery_uevent first_done clear %d needs_recovery", j->jid);
++			}
++
+ 			send_first_recovery_done(mg);
+ 		}
+ 	}

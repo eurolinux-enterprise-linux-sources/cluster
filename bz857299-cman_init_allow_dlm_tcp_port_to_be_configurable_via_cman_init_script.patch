@@ -1,0 +1,79 @@
+commit 33c58d437ad7f8c919ce7c56ef6826579a97fca7
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Fri Sep 14 09:29:19 2012 +0200
+
+    cman init: allow dlm tcp port to be configurable via cman init script
+    
+    Resolves: rhbz#857299
+    
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/cman/init.d/cman.in b/cman/init.d/cman.in
+index 9de349d..4f8db7a 100644
+--- a/cman/init.d/cman.in
++++ b/cman/init.d/cman.in
+@@ -110,12 +110,12 @@ fi
+ # DLM_CONTROLD_OPTS -- allow extra options to be passed to dlm_controld daemon.
+ [ -z "$DLM_CONTROLD_OPTS" ] && DLM_CONTROLD_OPTS=""
+ 
+-# DLM_LKBTBL_SIZE - DLM_RSBTBL_SIZE - DLM_DIRTBL_SIZE
+-# Allow tuning of DLM kernel hash table sizes.
++# Allow tuning of DLM kernel config.
+ # do NOT change unless instructed to do so.
+ [ -z "$DLM_LKBTBL_SIZE" ] && DLM_LKBTBL_SIZE=""
+ [ -z "$DLM_RSBTBL_SIZE" ] && DLM_RSBTBL_SIZE=""
+ [ -z "$DLM_DIRTBL_SIZE" ] && DLM_DIRTBL_SIZE=""
++[ -z "$DLM_TCP_PORT" ] && DLM_TCP_PORT=""
+ 
+ # FENCE_JOIN_TIMEOUT -- seconds to wait for fence domain join to
+ #     complete.  If the join hasn't completed in this time, fence_tool join
+@@ -713,7 +713,7 @@ leave_fence_domain()
+ 	fi
+ }
+ 
+-tune_dlm_hash_sizes()
++tune_dlm_config()
+ {
+ 	dlmdir="/sys/kernel/config/dlm/cluster"
+ 
+@@ -726,6 +726,9 @@ tune_dlm_hash_sizes()
+ 	[ -n "$DLM_DIRTBL_SIZE" ] && [ -f $dlmdir/dirtbl_size ] && \
+ 	  echo $DLM_DIRTBL_SIZE > $dlmdir/dirtbl_size
+ 
++	[ -n "$DLM_TCP_PORT" ] && [ -f $dlmdir/tcp_port ] && \
++	  echo $DLM_TCP_PORT > $dlmdir/tcp_port
++
+ 	return 0
+ }
+ 	
+@@ -797,9 +800,9 @@ start()
+ 		none \
+ 		"Starting dlm_controld"
+ 
+-	runwrap tune_dlm_hash_sizes \
++	runwrap tune_dlm_config \
+ 		none \
+-		"Tuning DLM kernel hash tables"
++		"Tuning DLM kernel config"
+ 
+ 	runwrap start_gfs_controld \
+ 		none \
+diff --git a/cman/init.d/cman.init.defaults.in b/cman/init.d/cman.init.defaults.in
+index bbaa049..835b44f 100644
+--- a/cman/init.d/cman.init.defaults.in
++++ b/cman/init.d/cman.init.defaults.in
+@@ -34,12 +34,12 @@
+ # DLM_CONTROLD_OPTS -- allow extra options to be passed to dlm_controld daemon.
+ #DLM_CONTROLD_OPTS=""
+ 
+-# DLM_LKBTBL_SIZE - DLM_RSBTBL_SIZE - DLM_DIRTBL_SIZE
+-# Allow tuning of DLM kernel hash table sizes.
++# Allow tuning of DLM kernel config.
+ # do NOT change unless instructed to do so.
+ #DLM_LKBTBL_SIZE=""
+ #DLM_RSBTBL_SIZE=""
+ #DLM_DIRTBL_SIZE=""
++#DLM_TCP_PORT=""
+ 
+ # FENCE_JOIN_TIMEOUT -- seconds to wait for fence domain join to
+ #     complete.  If the join hasn't completed in this time, fence_tool join

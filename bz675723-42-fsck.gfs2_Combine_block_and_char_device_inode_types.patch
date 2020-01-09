@@ -1,0 +1,202 @@
+commit 02714254368e71d63e1804e05a4534d564d5f5cb
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Thu Aug 11 09:16:33 2011 -0500
+
+    fsck.gfs2: Combine block and char device inode types
+    
+    This patch combines the block and character device block designations.
+    Devices are now treated equally as one block type, which is fine.
+    This buys back a block type in the block map which may be used later
+    for gfs1 support.  It also eliminates the rgrp block designation,
+    which is not needed: We only need to know whether rgrp blocks are
+    "in use" or not.  In fact, the rgrp blocks have special processing
+    anyway and special code (function valid_block) to check for overlaps.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index 64220f0..c0b7420 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -1153,12 +1153,12 @@ static int handle_ip(struct gfs2_sbd *sdp, struct gfs2_inode *ip)
+ 		break;
+ 	case S_IFBLK:
+ 		if (fsck_blockmap_set(ip, block, _("block device"),
+-				      gfs2_inode_blk))
++				      gfs2_inode_device))
+ 			goto bad_dinode;
+ 		break;
+ 	case S_IFCHR:
+ 		if (fsck_blockmap_set(ip, block, _("character device"),
+-				      gfs2_inode_chr))
++				      gfs2_inode_device))
+ 			goto bad_dinode;
+ 		break;
+ 	case S_IFIFO:
+@@ -1551,7 +1551,7 @@ int pass1(struct gfs2_sbd *sdp)
+ 				     "is now marked as 'rgrp data'\n"),
+ 				   rgd->ri.ri_addr + i, rgd->ri.ri_addr + i);
+ 			if (gfs2_blockmap_set(bl, rgd->ri.ri_addr + i,
+-					      gfs2_meta_rgrp)) {
++					      gfs2_indir_blk)) {
+ 				stack;
+ 				return FSCK_ERROR;
+ 			}
+diff --git a/gfs2/fsck/pass2.c b/gfs2/fsck/pass2.c
+index 7f32903..a4e8dca 100644
+--- a/gfs2/fsck/pass2.c
++++ b/gfs2/fsck/pass2.c
+@@ -134,12 +134,8 @@ static int check_file_type(uint8_t de_type, uint8_t blk_type)
+ 		if (de_type != DT_LNK)
+ 			return 1;
+ 		break;
+-	case gfs2_inode_blk:
+-		if (de_type != DT_BLK)
+-			return 1;
+-		break;
+-	case gfs2_inode_chr:
+-		if (de_type != DT_CHR)
++	case gfs2_inode_device:
++		if (de_type != DT_BLK && de_type != DT_CHR)
+ 			return 1;
+ 		break;
+ 	case gfs2_inode_fifo:
+diff --git a/gfs2/fsck/pass3.c b/gfs2/fsck/pass3.c
+index b904814..51104b5 100644
+--- a/gfs2/fsck/pass3.c
++++ b/gfs2/fsck/pass3.c
+@@ -240,9 +240,8 @@ int pass3(struct gfs2_sbd *sdp)
+ 					log_err( _("Unlinked directory with bad block remains\n"));
+ 			}
+ 			if (q != gfs2_inode_dir && q != gfs2_inode_file &&
+-			   q != gfs2_inode_lnk && q != gfs2_inode_blk &&
+-			   q != gfs2_inode_chr && q != gfs2_inode_fifo &&
+-			   q != gfs2_inode_sock) {
++			   q != gfs2_inode_lnk && q != gfs2_inode_device &&
++			   q != gfs2_inode_fifo && q != gfs2_inode_sock) {
+ 				log_err( _("Unlinked block marked as an inode "
+ 					   "is not an inode\n"));
+ 				if (!query(_("Clear the unlinked block?"
+diff --git a/gfs2/fsck/pass4.c b/gfs2/fsck/pass4.c
+index 04fb075..32dbb72 100644
+--- a/gfs2/fsck/pass4.c
++++ b/gfs2/fsck/pass4.c
+@@ -83,8 +83,7 @@ static int scan_inode_list(struct gfs2_sbd *sdp) {
+ 			if (q != gfs2_inode_dir &&
+ 			   q != gfs2_inode_file &&
+ 			   q != gfs2_inode_lnk &&
+-			   q != gfs2_inode_blk &&
+-			   q != gfs2_inode_chr &&
++			   q != gfs2_inode_device &&
+ 			   q != gfs2_inode_fifo &&
+ 			   q != gfs2_inode_sock) {
+ 				log_err( _("Unlinked block %lld (0x%llx) "
+diff --git a/gfs2/fsck/pass5.c b/gfs2/fsck/pass5.c
+index 814f202..29b5965 100644
+--- a/gfs2/fsck/pass5.c
++++ b/gfs2/fsck/pass5.c
+@@ -27,8 +27,7 @@ static int convert_mark(uint8_t q, uint32_t *count)
+ 	case gfs2_inode_dir:
+ 	case gfs2_inode_file:
+ 	case gfs2_inode_lnk:
+-	case gfs2_inode_blk:
+-	case gfs2_inode_chr:
++	case gfs2_inode_device:
+ 	case gfs2_inode_fifo:
+ 	case gfs2_inode_sock:
+ 		count[1]++;
+@@ -36,7 +35,6 @@ static int convert_mark(uint8_t q, uint32_t *count)
+ 
+ 	case gfs2_indir_blk:
+ 	case gfs2_leaf_blk:
+-	case gfs2_meta_rgrp:
+ 	case gfs2_meta_eattr:
+ 		count[2]++;
+ 		return GFS2_BLKST_USED;
+diff --git a/gfs2/fsck/util.h b/gfs2/fsck/util.h
+index b26c123..106cca8 100644
+--- a/gfs2/fsck/util.h
++++ b/gfs2/fsck/util.h
+@@ -42,15 +42,15 @@ enum gfs2_mark_block {
+ 	gfs2_inode_file    = (0x4),
+ 
+ 	gfs2_inode_lnk     = (0x5),
+-	gfs2_inode_blk     = (0x6),
+-	gfs2_inode_chr     = (0x7),
++	gfs2_inode_device  = (0x6),
++
+ 	gfs2_inode_fifo    = (0x8),
+ 	gfs2_inode_sock    = (0x9),
+ 
+ 	gfs2_inode_invalid = (0xa),
+ 	gfs2_meta_inval    = (0xb),
+ 	gfs2_leaf_blk      = (0xc),
+-	gfs2_meta_rgrp     = (0xd),
++
+ 	gfs2_meta_eattr    = (0xe),
+ 
+ 	gfs2_bad_block     = (0xf), /* Contains at least one bad block */
+@@ -66,15 +66,15 @@ static const inline char *block_type_string(uint8_t q)
+ 		"file",
+ 
+ 		"symlink",
+-		"block device",
+-		"char device",
++		"device",
++		"",
+ 		"fifo",
+ 		"socket",
+ 
+ 		"invalid inode",
+ 		"invalid meta",
+ 		"dir leaf",
+-		"rgrp meta",
++		"",
+ 		"eattribute",
+ 
+ 		"bad"};
+@@ -88,25 +88,25 @@ static const inline char *block_type_string(uint8_t q)
+ static inline int blockmap_to_bitmap(enum gfs2_mark_block m)
+ {
+ 	static int bitmap_states[16] = {
+-		GFS2_BLKST_FREE,
+-		GFS2_BLKST_USED,
+-		GFS2_BLKST_USED,
+-		GFS2_BLKST_DINODE,
+-		GFS2_BLKST_DINODE,
+-
+-		GFS2_BLKST_DINODE,
+-		GFS2_BLKST_DINODE,
+-		GFS2_BLKST_DINODE,
+-		GFS2_BLKST_DINODE,
+-		GFS2_BLKST_DINODE,
+-
+-		GFS2_BLKST_FREE,
+-		GFS2_BLKST_FREE,
+-		GFS2_BLKST_USED,
+-		GFS2_BLKST_USED,
+-		GFS2_BLKST_USED,
+-
+-		GFS2_BLKST_USED
++		GFS2_BLKST_FREE,  /* free */
++		GFS2_BLKST_USED,  /* data */
++		GFS2_BLKST_USED,  /* indirect data or rgrp meta*/
++		GFS2_BLKST_DINODE,  /* directory */
++		GFS2_BLKST_DINODE,  /* file */
++
++		GFS2_BLKST_DINODE,  /* symlink */
++		GFS2_BLKST_DINODE,  /* block or char device */
++		GFS2_BLKST_USED,    /* reserved */
++		GFS2_BLKST_DINODE,  /* fifo */
++		GFS2_BLKST_DINODE,  /* socket */
++
++		GFS2_BLKST_FREE,  /* invalid inode */
++		GFS2_BLKST_FREE,  /* invalid meta */
++		GFS2_BLKST_USED,  /* dir leaf */
++		GFS2_BLKST_UNLINKED,  /* unused */
++		GFS2_BLKST_USED,  /* eattribute */
++
++		GFS2_BLKST_USED,  /* bad */
+ 	};
+ 	return bitmap_states[m];
+ }

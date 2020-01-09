@@ -1,0 +1,24 @@
+commit 5cacd15160d57c57e76b6defdd701460c296b8c9
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Mon Aug 8 14:44:46 2011 -0500
+
+    fsck.gfs2: get rid of triple negative logic
+    
+    This patch changes the logic of the code from being triple-negative
+    to single-negative so it won't twist your brain into knots.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index 2db389f..888acec 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -930,7 +930,7 @@ static int delete_block_if_notdup(struct gfs2_inode *ip, uint64_t block,
+ 	uint8_t q;
+ 	struct duptree *d;
+ 
+-	if (!valid_block(ip->i_sbd, block) != 0)
++	if (!valid_block(ip->i_sbd, block))
+ 		return -EFAULT;
+ 
+ 	q = block_type(block);

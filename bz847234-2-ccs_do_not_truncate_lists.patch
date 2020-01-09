@@ -1,0 +1,34 @@
+commit bb0daf4c52d18205b0c57448f7ee160d29fed90c
+Author: Christine Caulfield <ccaulfie@redhat.com>
+Date:   Tue Aug 14 13:53:00 2012 +0100
+
+    ccs: Don't truncate lists
+    
+    The last ccs patch caused ccs_get_list to return trunated items due to datalen not being filled in
+    with the new cconfdb API. This fixes that.
+    
+    Also add a missing pointer NULL that could have resulted in corrupted memory
+    
+    Resolves: rhbz#847234
+    
+    Signed-off-by: Christine Caulfield <ccaulfie@redhat.com>
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/config/libs/libccsconfdb/xpathlite.c b/config/libs/libccsconfdb/xpathlite.c
+index 75c33bc..0d770da 100644
+--- a/config/libs/libccsconfdb/xpathlite.c
++++ b/config/libs/libccsconfdb/xpathlite.c
+@@ -323,9 +323,12 @@ static int get_data(confdb_handle_t handle, hdb_handle_t connection_handle,
+ 			}
+ 
+ 			value--;
+-			if (value != 0)
++			if (value != 0) {
+ 				free(keyval);
++				keyval = NULL;
++			}
+ 		}
++		datalen = strlen(data);
+ 		resval = malloc(datalen + keyvallen + 2);
+ 		if (!resval)
+ 			goto fail;

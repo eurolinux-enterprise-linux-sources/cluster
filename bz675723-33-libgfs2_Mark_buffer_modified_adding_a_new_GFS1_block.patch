@@ -1,0 +1,26 @@
+commit acee2940261ea454b8f82fcc55827a3e97ad0049
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Wed Aug 10 10:25:19 2011 -0500
+
+    libgfs2: Mark buffer modified adding a new GFS1 block
+    
+    When adding new blocks to the file system for GFS1, function
+    gfs1_lookup_block was not marking the buffer and dinode buffer
+    as modified like gfs2_lookup_block does.  This patch fixes that.
+    
+    rhbz#675723
+
+diff --git a/gfs2/libgfs2/gfs1.c b/gfs2/libgfs2/gfs1.c
+index 2bdf57f..59eaa8d 100644
+--- a/gfs2/libgfs2/gfs1.c
++++ b/gfs2/libgfs2/gfs1.c
+@@ -54,7 +54,9 @@ void gfs1_lookup_block(struct gfs2_inode *ip, struct gfs2_buffer_head *bh,
+ 		*block = meta_alloc(ip);
+ 
+ 	*ptr = cpu_to_be64(*block);
++	bmodified(bh);
+ 	ip->i_di.di_blocks++;
++	bmodified(ip->i_bh);
+ 
+ 	*new = 1;
+ }

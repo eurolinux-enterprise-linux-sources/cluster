@@ -1,0 +1,47 @@
+commit 2dd1ef3d036b0958fcf3dee56945e5454fd7bdb0
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Mon Aug 8 15:16:01 2011 -0500
+
+    fsck.gfs2: fsck.gfs2: Ask to reclaim unlinked meta per-rgrp only
+    
+    Before this patch, fsck.gfs2 would ask for every unlinked metadata bit
+    whether you wanted to reclaim it as free space.  This patch makes it
+    ask only once per resource group, and reports which resource group
+    so that the user doesn't think it's stuck in an infinite loop.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/initialize.c b/gfs2/fsck/initialize.c
+index 29e4560..08da24f 100644
+--- a/gfs2/fsck/initialize.c
++++ b/gfs2/fsck/initialize.c
+@@ -192,7 +192,7 @@ static void check_rgrp_integrity(struct gfs2_sbd *sdp, struct rgrp_list *rgd,
+ 				 int *this_rg_bad)
+ {
+ 	uint32_t rg_free, rg_reclaimed;
+-	int rgb, x, y, off, bytes_to_check, total_bytes_to_check;
++	int rgb, x, y, off, bytes_to_check, total_bytes_to_check, asked = 0;
+ 	unsigned int state;
+ 
+ 	rg_free = rg_reclaimed = 0;
+@@ -231,9 +231,17 @@ static void check_rgrp_integrity(struct gfs2_sbd *sdp, struct rgrp_list *rgd,
+ 				}
+ 				/* GFS2_BLKST_UNLINKED */
+ 				*this_rg_bad = 1;
+-				if (!(*fixit)) {
+-					if (query(_("Okay to reclaim unlinked "
+-						    "inodes? (y/n)")))
++				if (!asked) {
++					char msg[256];
++
++					asked = 1;
++					sprintf(msg,
++						_("Okay to reclaim unlinked "
++						  "inodes in resource group "
++						  "%lld (0x%llx)? (y/n)"),
++						(unsigned long long)rgd->ri.ri_addr,
++						(unsigned long long)rgd->ri.ri_addr);
++					if (query("%s", msg))
+ 						*fixit = 1;
+ 				}
+ 				if (!(*fixit))

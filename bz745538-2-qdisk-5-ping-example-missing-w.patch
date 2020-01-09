@@ -1,0 +1,30 @@
+commit 854cf3464251cdb132b9768cefb849d49ec1d4a9
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Tue May 8 06:02:13 2012 +0200
+
+    qdisk: Fix man page example (take 2)
+    
+    Resolves: rhbz#745538
+    
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+    Reviewed-by: Lon Hohberger <lhh@redhat.com>
+
+diff --git a/cman/man/qdisk.5 b/cman/man/qdisk.5
+index e0b0ff6..ca974fa 100644
+--- a/cman/man/qdisk.5
++++ b/cman/man/qdisk.5
+@@ -479,11 +479,11 @@ by the qdiskd timeout.
+ .br
+ <quorumd interval="1" tko="10" votes="3" label="testing">
+ .in 12
+-<heuristic program="ping A -c1 -t1" score="1" interval="2" tko="3"/>
++<heuristic program="ping A -c1 -w1" score="1" interval="2" tko="3"/>
+ .br
+-<heuristic program="ping B -c1 -t1" score="1" interval="2" tko="3"/>
++<heuristic program="ping B -c1 -w1" score="1" interval="2" tko="3"/>
+ .br
+-<heuristic program="ping C -c1 -t1" score="1" interval="2" tko="3"/>
++<heuristic program="ping C -c1 -w1" score="1" interval="2" tko="3"/>
+ .br
+ .in 8
+ </quorumd>

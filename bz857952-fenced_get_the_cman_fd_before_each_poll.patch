@@ -1,0 +1,71 @@
+commit 1b420aa98fce71f123480dd4eae31e0eb466e864
+Author: Christine Caulfield <ccaulfie@redhat.com>
+Date:   Wed Oct 24 14:55:00 2012 -0500
+
+    fenced: get the cman fd before each poll
+    
+    Prevent rare but possible spinning in poll on the
+    cman fd.
+    
+    bz 857952
+    
+    Signed-off-by: Christine Caulfield <ccaulfie@redhat.com>
+
+diff --git a/fence/fenced/fd.h b/fence/fenced/fd.h
+index 0be3332..205836c 100644
+--- a/fence/fenced/fd.h
++++ b/fence/fenced/fd.h
+@@ -270,6 +270,7 @@ int name_to_nodeid(char *name);
+ struct node *get_new_node(struct fd *fd, int nodeid);
+ void kick_node_from_cluster(int nodeid);
+ void set_cman_dirty(void);
++int get_cman_fd(void);
+ 
+ /* recover.c */
+ 
+diff --git a/fence/fenced/main.c b/fence/fenced/main.c
+index 827dab6..8e4f10b 100644
+--- a/fence/fenced/main.c
++++ b/fence/fenced/main.c
+@@ -739,6 +739,7 @@ void cluster_dead(int ci)
+ static void loop(void)
+ {
+ 	int rv, i;
++	int cman_fd_pos;
+ 	void (*workfn) (int ci);
+ 	void (*deadfn) (int ci);
+ 
+@@ -754,7 +755,7 @@ static void loop(void)
+ 	rv = setup_cluster();
+ 	if (rv < 0)
+ 		goto out;
+-	client_add(rv, process_cluster, cluster_dead);
++	cman_fd_pos = client_add(rv, process_cluster, cluster_dead);
+ 
+ 	rv = setup_ccs();
+ 	if (rv < 0)
+@@ -804,6 +805,8 @@ static void loop(void)
+ 	}
+ 
+ 	for (;;) {
++		/* We need to re-get the cman FD each time */
++		pollfd[cman_fd_pos].fd = get_cman_fd();
+ 		rv = poll(pollfd, client_maxi + 1, -1);
+ 		if (rv == -1 && errno == EINTR) {
+ 			if (daemon_quit && list_empty(&domains))
+diff --git a/fence/fenced/member_cman.c b/fence/fenced/member_cman.c
+index ee879be..a7f4341 100644
+--- a/fence/fenced/member_cman.c
++++ b/fence/fenced/member_cman.c
+@@ -12,6 +12,11 @@ static int		old_node_count;
+ static cman_node_t	cman_nodes[MAX_NODES];
+ static int		cman_node_count;
+ 
++int get_cman_fd(void)
++{
++	return cman_get_fd(ch);
++}
++
+ void set_cman_dirty(void)
+ {
+ 	int rv;

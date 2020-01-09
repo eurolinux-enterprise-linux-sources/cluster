@@ -1,0 +1,22 @@
+commit d019d4a3697fa9d5e055d86e6b40f02a3f22cd60
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Fri Feb 1 21:28:46 2013 -0700
+
+    gfs2_edit: fix a segfault with file names > 255 bytes
+    
+    This patch fixes a segfault in gfs2_edit caused by trying to print
+    file names longer than 255 bytes.
+
+diff --git a/gfs2/edit/gfs2hex.c b/gfs2/edit/gfs2hex.c
+index 7962228..0aabcd9 100644
+--- a/gfs2/edit/gfs2hex.c
++++ b/gfs2/edit/gfs2hex.c
+@@ -122,7 +122,7 @@ void eol(int col) /* end of line */
+ void __attribute__((format (printf, 1, 2))) print_gfs2(const char *fmt, ...)
+ {
+ 	va_list args;
+-	char string[NAME_MAX];
++	char string[PATH_MAX];
+ 	
+ 	memset(string, 0, sizeof(string));
+ 	va_start(args, fmt);

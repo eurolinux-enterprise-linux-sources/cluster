@@ -1,0 +1,13 @@
+diff --git a/cman/qdisk/main.c b/cman/qdisk/main.c
+index 49ea3da..e84e788 100644
+--- a/cman/qdisk/main.c
++++ b/cman/qdisk/main.c
+@@ -553,7 +553,7 @@ quorum_init(qd_ctx *ctx, node_info_t *ni, int max, struct h_data *h, int maxh)
+ 		return -1;
+ 	}
+ 
+-	while (++x <= ctx->qc_tko && _running) {
++	while (++x <= ctx->qc_tko_up && _running) {
+ 		read_node_blocks(ctx, ni, max);
+ 		check_transitions(ctx, ni, max, NULL);
+ 

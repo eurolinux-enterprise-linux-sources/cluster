@@ -1,0 +1,303 @@
+commit 0cf2544edfa377c47b0e904ecdce00194590593e
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Sun Feb 17 13:08:04 2013 -0700
+
+    libgfs2: Add readahead for rgrp headers
+    
+    This adds readahead to rgrp headers, greatly improving the speed with
+    which they can be read in during fsck. Also, the multiple reads which
+    were used before are replaced with a single read per resource group.
+    
+    This is an example of the kinds of speed up which may well be possible
+    elsewhere in the code. I started with this example simply because it was
+    the easiest one to do.
+    
+    An alternative implementation might O_DIRECT and aio, but I'm not sure
+    that there would be much benefit compared with this method. A further
+    thought would be to use drop behind in places where we know that we will
+    not be looking at the data again.
+    
+    Taking timings for just the rgrp reading section of fsck, I see almost a
+    10x speed up for that section of code using this patch on a 500G
+    filesystem.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/main.c b/gfs2/fsck/main.c
+index 676b676..ec44c83 100644
+--- a/gfs2/fsck/main.c
++++ b/gfs2/fsck/main.c
+@@ -35,6 +35,8 @@ struct osi_root inodetree = (struct osi_root) { NULL, };
+ int dups_found = 0, dups_found_first = 0;
+ struct gfs_sb *sbd1 = NULL;
+ 
++extern FILE *brdfp;
++
+ /* This function is for libgfs2's sake.                                      */
+ void print_it(const char *label, const char *fmt, const char *fmt2, ...)
+ {
+@@ -232,6 +234,8 @@ int main(int argc, char **argv)
+ 
+ 	memset(sdp, 0, sizeof(*sdp));
+ 
++/* 	brdfp = fopen("brd-log.txt", "w"); */
++
+ 	if ((error = read_cmdline(argc, argv, &opts)))
+ 		exit(error);
+ 	setbuf(stdout, NULL);
+diff --git a/gfs2/libgfs2/buf.c b/gfs2/libgfs2/buf.c
+index 5a0f718..fdd6e3d 100644
+--- a/gfs2/libgfs2/buf.c
++++ b/gfs2/libgfs2/buf.c
+@@ -5,6 +5,7 @@
+ #include <inttypes.h>
+ #include <sys/types.h>
+ #include <sys/stat.h>
++#include <sys/time.h>
+ #include <fcntl.h>
+ #include <unistd.h>
+ #include <errno.h>
+@@ -12,6 +13,61 @@
+ 
+ #include "libgfs2.h"
+ 
++FILE *brdfp = NULL;
++
++int __breadm(struct gfs2_sbd *sdp, struct gfs2_buffer_head **bhs, size_t n,
++	     uint64_t block, int line, const char *caller)
++{
++	struct iovec *iov = alloca(n * sizeof(struct iovec));
++	struct iovec *iovbase = iov;
++	struct timeval st, et, tt;
++	uint64_t b = block;
++	size_t size = 0;
++	size_t i;
++	int ret;
++
++	for (i = 0; i < n; i++) {
++		bhs[i] = bget(sdp, b++);
++		if (bhs[i] == NULL)
++			return -1;
++		*iov++ = bhs[i]->iov;
++		size += bhs[i]->iov.iov_len;
++	}
++
++	gettimeofday(&st, NULL);
++	ret = preadv(sdp->device_fd, iovbase, n, block * sdp->bsize);
++	gettimeofday(&et, NULL);
++
++	if (ret != size) {
++ 		fprintf(stderr, "bad read: %s from %s:%d: block "
++				"%llu (0x%llx)\n", strerror(errno),
++				caller, line, (unsigned long long)block,
++				(unsigned long long)block);
++ 		exit(-1);
++ 	}
++
++	if (brdfp) {
++		unsigned long usecs;
++		timersub(&et, &st, &tt);
++		usecs = tt.tv_usec + 1000000*tt.tv_sec;
++		fprintf(brdfp, "%lu\t%d\t%s\n", usecs, line, caller);
++	}
++
++	return 0;
++}
++
++struct gfs2_buffer_head *__bread(struct gfs2_sbd *sdp, uint64_t num, int line,
++				 const char *caller)
++{
++	struct gfs2_buffer_head *bh;
++	int ret;
++
++	ret = __breadm(sdp, &bh, 1, num, line, caller);
++	if (ret >= 0)
++		return bh;
++	return NULL;
++}
++
+ struct gfs2_buffer_head *__bget_generic(struct gfs2_sbd *sdp, uint64_t num,
+ 					int read_disk,
+ 					int line, const char *caller)
+@@ -46,27 +102,28 @@ struct gfs2_buffer_head *__bget_generic(struct gfs2_sbd *sdp, uint64_t num,
+ 	return bh;
+ }
+ 
+-struct gfs2_buffer_head *__bget(struct gfs2_sbd *sdp, uint64_t num, int line,
+-				const char *caller)
++struct gfs2_buffer_head *bget(struct gfs2_sbd *sdp, uint64_t num)
+ {
+-	return __bget_generic(sdp, num, FALSE, line, caller);
+-}
++	struct gfs2_buffer_head *bh;
+ 
+-struct gfs2_buffer_head *__bread(struct gfs2_sbd *sdp, uint64_t num, int line,
+-				 const char *caller)
+-{
+-	return __bget_generic(sdp, num, TRUE, line, caller);
++	bh = calloc(1, sizeof(struct gfs2_buffer_head) + sdp->bsize);
++	if (bh == NULL)
++		return NULL;
++
++	bh->b_blocknr = num;
++	bh->sdp = sdp;
++	bh->iov.iov_base = (char *)bh + sizeof(struct gfs2_buffer_head);
++	bh->iov.iov_len = sdp->bsize;
++
++	return bh;
+ }
+ 
+ int bwrite(struct gfs2_buffer_head *bh)
+ {
+ 	struct gfs2_sbd *sdp = bh->sdp;
+ 
+-	if (lseek(sdp->device_fd, bh->b_blocknr * sdp->bsize, SEEK_SET) !=
+-	    bh->b_blocknr * sdp->bsize) {
+-		return -1;
+-	}
+-	if (write(sdp->device_fd, bh->b_data, sdp->bsize) != sdp->bsize)
++	if (pwritev(sdp->device_fd, &bh->iov, 1, bh->b_blocknr * sdp->bsize) !=
++	    bh->iov.iov_len)
+ 		return -1;
+ 	sdp->writes++;
+ 	bh->b_modified = 0;
+diff --git a/gfs2/libgfs2/libgfs2.h b/gfs2/libgfs2/libgfs2.h
+index 1b0b98d..bf834a5 100644
+--- a/gfs2/libgfs2/libgfs2.h
++++ b/gfs2/libgfs2/libgfs2.h
+@@ -10,6 +10,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <sys/types.h>
++#include <sys/uio.h>
+ #include <linux/types.h>
+ #include <linux/limits.h>
+ #include <endian.h>
+@@ -112,7 +113,10 @@ struct gfs2_buffer_head {
+ 	osi_list_t b_altlist; /* alternate list */
+ 	uint64_t b_blocknr;
+ 	int b_modified;
+-	char *b_data;
++	union {
++		struct iovec iov;
++		char *b_data;
++	};
+ 	struct gfs2_sbd *sdp;
+ };
+ 
+@@ -291,6 +295,8 @@ extern struct gfs2_buffer_head *__bget(struct gfs2_sbd *sdp, uint64_t num,
+ 				       int line, const char *caller);
+ extern struct gfs2_buffer_head *__bread(struct gfs2_sbd *sdp, uint64_t num,
+ 					int line, const char *caller);
++extern struct gfs2_buffer_head *bget(struct gfs2_sbd *sdp, uint64_t num);
++extern int __breadm(struct gfs2_sbd *sdp, struct gfs2_buffer_head **bhs, size_t n, uint64_t block, int line, const char *caller);
+ extern int bwrite(struct gfs2_buffer_head *bh);
+ extern int brelse(struct gfs2_buffer_head *bh);
+ 
+@@ -299,8 +305,8 @@ extern int brelse(struct gfs2_buffer_head *bh);
+ #define bget_generic(bl, num, find, read) __bget_generic(bl, num, find, read, \
+ 							 __LINE__, \
+ 							 __FUNCTION__)
+-#define bget(bl, num) __bget(bl, num, __LINE__, __FUNCTION__)
+ #define bread(bl, num) __bread(bl, num, __LINE__, __FUNCTION__)
++#define breadm(bl, bhs, n, block) __breadm(bl, bhs, n, block, __LINE__, __FUNCTION__)
+ #define bsync(bl) do { __bsync(bl, __LINE__, __FUNCTION__); } while(0)
+ #define bcommit(bl) do { __bcommit(bl, __LINE__, __FUNCTION__); } while(0)
+ 
+diff --git a/gfs2/libgfs2/rgrp.c b/gfs2/libgfs2/rgrp.c
+index 0fcea3c..64703e0 100644
+--- a/gfs2/libgfs2/rgrp.c
++++ b/gfs2/libgfs2/rgrp.c
+@@ -129,10 +129,10 @@ uint64_t gfs2_rgrp_read(struct gfs2_sbd *sdp, struct rgrp_tree *rgd)
+ 		return -1;
+ 	if (gfs2_check_range(sdp, rgd->ri.ri_addr))
+ 		return -1;
++	if (breadm(sdp, rgd->bh, length, rgd->ri.ri_addr))
++		return -1;
+ 	for (x = 0; x < length; x++){
+-		rgd->bh[x] = bread(sdp, rgd->ri.ri_addr + x);
+-		if(gfs2_check_meta(rgd->bh[x],
+-				   (x) ? GFS2_METATYPE_RB : GFS2_METATYPE_RG))
++		if(gfs2_check_meta(rgd->bh[x], (x) ? GFS2_METATYPE_RB : GFS2_METATYPE_RG))
+ 		{
+ 			uint64_t error;
+ 
+diff --git a/gfs2/libgfs2/super.c b/gfs2/libgfs2/super.c
+index f8de2e6..8f49dff 100644
+--- a/gfs2/libgfs2/super.c
++++ b/gfs2/libgfs2/super.c
+@@ -5,6 +5,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <errno.h>
++#include <fcntl.h>
+ 
+ #include "libgfs2.h"
+ #include "osi_list.h"
+@@ -206,6 +207,29 @@ int rindex_read(struct gfs2_sbd *sdp, int fd, int *count1, int *sane)
+ 	return 0;
+ }
+ 
++#define RA_WINDOW 32
++
++static unsigned gfs2_rgrp_reada(struct gfs2_sbd *sdp, unsigned cur_window,
++				struct osi_node *n)
++{
++	struct rgrp_tree *rgd;
++	unsigned i;
++	off_t start, len;
++
++	for (i = 0; i < RA_WINDOW; i++, n = osi_next(n)) {
++		if (n == NULL)
++			return i;
++		if (i < cur_window)
++			continue;
++		rgd = (struct rgrp_tree *)n;
++		start = rgd->ri.ri_addr * sdp->bsize;
++		len = rgd->ri.ri_length * sdp->bsize;
++		posix_fadvise(sdp->device_fd, start, len, POSIX_FADV_WILLNEED);
++	}
++
++	return i;
++}
++
+ /**
+  * ri_update - attach rgrps to the super block
+  * @sdp: incore superblock data
+@@ -226,15 +250,24 @@ static int __ri_update(struct gfs2_sbd *sdp, int fd, int *rgcount, int *sane,
+ 	uint64_t errblock = 0;
+ 	uint64_t rmax = 0;
+ 	struct osi_node *n, *next = NULL;
++	unsigned ra_window = 0;
++
++	/* Turn off generic readhead */
++	posix_fadvise(sdp->device_fd, 0, 0, POSIX_FADV_RANDOM);
+ 
+ 	if (rindex_read(sdp, fd, &count1, sane))
+ 		goto fail;
+ 	for (n = osi_first(&sdp->rgtree); n; n = next) {
+ 		next = osi_next(n);
+ 		rgd = (struct rgrp_tree *)n;
++		/* Readahead resource group headers */
++		if (ra_window < RA_WINDOW/2)
++			ra_window = gfs2_rgrp_reada(sdp, ra_window, n);
++		/* Read resource group header */
+ 		errblock = gfs2_rgrp_read(sdp, rgd);
+ 		if (errblock)
+ 			return errblock;
++		ra_window--;
+ 		count2++;
+ 		if (!quiet && count2 % 100 == 0) {
+ 			printf(".");
+@@ -250,9 +283,11 @@ static int __ri_update(struct gfs2_sbd *sdp, int fd, int *rgcount, int *sane,
+ 	if (count1 != count2)
+ 		goto fail;
+ 
++	posix_fadvise(sdp->device_fd, 0, 0, POSIX_FADV_NORMAL);
+ 	return 0;
+ 
+  fail:
++	posix_fadvise(sdp->device_fd, 0, 0, POSIX_FADV_NORMAL);
+ 	gfs2_rgrp_free(&sdp->rgtree);
+ 	return -1;
+ }

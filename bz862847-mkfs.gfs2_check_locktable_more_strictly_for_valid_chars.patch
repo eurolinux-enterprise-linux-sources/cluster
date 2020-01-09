@@ -1,0 +1,46 @@
+commit 8f339d0e5c151c6e444c0108b98a8c3b63fd28b8
+Author: Andrew Price <anprice@redhat.com>
+Date:   Fri Oct 12 15:48:08 2012 +0100
+
+    mkfs.gfs2: Check locktable more strictly for valid chars
+    
+    Previously mkfs.gfs2 allowed any printable characters to be used in the
+    locktable name. This causes problems when the locktable contains special
+    characters such as '/'. This patch limits the locktable to alphanumeric
+    characters plus hyphens and underscores.
+    
+    Resolves: rhbz#862847
+    
+    Signed-off-by: Andrew Price <anprice@redhat.com>
+
+diff --git a/gfs2/man/mkfs.gfs2.8 b/gfs2/man/mkfs.gfs2.8
+index 63348f8..c83b432 100644
+--- a/gfs2/man/mkfs.gfs2.8
++++ b/gfs2/man/mkfs.gfs2.8
+@@ -73,7 +73,8 @@ Clustername must match that in cluster.conf; only members of this
+ cluster are permitted to use this file system.
+ Fsname is a unique file system name used to distinguish this GFS2 file
+ system from others created (1 to 16 characters).  Lock_nolock doesn't
+-use this field.
++use this field. Valid \fIclustername\fRs and \fIfsname\fRs may only contain
++alphanumeric characters, hyphens (-) and underscores (_).
+ .TP
+ \fB-u\fP \fIMegaBytes\fR
+ Initial size of each journal's unlinked tag file
+diff --git a/gfs2/mkfs/main_mkfs.c b/gfs2/mkfs/main_mkfs.c
+index bcc60e4..7163cf1 100644
+--- a/gfs2/mkfs/main_mkfs.c
++++ b/gfs2/mkfs/main_mkfs.c
+@@ -263,10 +263,8 @@ static void test_locking(char *lockproto, char *locktable)
+ 			exit(-1);
+ 		}
+ 		for (c = locktable; *c; c++) {
+-			if (isspace(*c))
+-				die( _("locktable error: contains space characters\n"));
+-			if (!isprint(*c))
+-				die( _("locktable error: contains unprintable characters\n"));
++			if (!isalnum(*c) && (*c != '-') && (*c != '_') && (*c != ':'))
++				die( _("locktable error: invalid character '%c'\n"), *c);
+ 		}
+ 
+ 		c = strstr(locktable, ":");

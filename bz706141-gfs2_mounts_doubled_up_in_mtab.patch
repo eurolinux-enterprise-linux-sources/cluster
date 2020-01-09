@@ -1,0 +1,56 @@
+commit a186f41a23b2bfc374ce7c4383518da469cffdec
+Author: Abhijith Das <adas@radium.msp.redhat.com>
+Date:   Thu Jul 21 14:59:40 2011 -0500
+
+    mount.gfs2 - gfs2 mounts doubled up in mtab
+    
+    When the -o remount option is used with mount.gfs2 it fails to
+    remove the original mtab entry because it can't find it. Instead
+    it simply adds the mount entry corresponding to the remount,
+    thereby doubling the entries in mtab. This patch corrects the
+    logic to find the mtab entry so mount.gfs2 finds and removes
+    the original entry correctly before adding the remount entry.
+    
+    Resolves: rhbz#706141
+    Signed-off-by: Abhi Das <adas@redhat.com>
+    Reviewed-by: Bob Peterson <rpeterso@redhat.com>
+
+diff --git a/gfs2/mount/mtab.c b/gfs2/mount/mtab.c
+index a43d04e..ca12851 100644
+--- a/gfs2/mount/mtab.c
++++ b/gfs2/mount/mtab.c
+@@ -118,6 +118,7 @@ void del_mtab_entry(struct mount_options *mo)
+ 	mode_t old_umask;
+ 	struct stat sbuf;
+ 	int found = 0;
++	char *abs_path, *abs_dev;
+ 
+ 	if (ignore_mtab())
+ 		return;
+@@ -137,13 +138,19 @@ void del_mtab_entry(struct mount_options *mo)
+ 	while (fgets(line, PATH_MAX, mtab)) {
+ 		/* exclude the line matching the fs being unmounted
+ 		   from the next version of mtab */
+-
+-		if ((sscanf(line, "%s %s %s", device, path, type) == 3) &&
+-		    (strncmp(type, "gfs", 3) == 0) &&
+-		    (strcmp(path, mo->dir) == 0) &&
+-		    (strcmp(device, mo->dev) == 0)) {
+-			found = 1;
+-			continue;
++		if (sscanf(line, "%s %s %s", device, path, type) == 3) {
++			abs_path = realpath(path, NULL);
++			abs_dev = realpath(device, NULL);
++			if ((strcmp(type, "gfs2") == 0) &&
++			    (strcmp(abs_path, mo->dir) == 0) &&
++			    (strcmp(abs_dev, mo->dev) == 0)) {
++				found = 1;
++				free(abs_path);
++				free(abs_dev);
++				continue;
++			}
++			free(abs_path);
++			free(abs_dev);
+ 		}
+ 
+ 		/* all other lines from mtab are included in

@@ -1,0 +1,39 @@
+xml: ccs_update_schema: be verbose about extraction fail
+
+Previously, the distillation of resource-agents' metadata could fail
+from unexpected reasons without any evidence ever being made, unlike
+in case of fence-agents.  Also "no metadata" and "issue with their
+extraction" will allegedly yield the same outcome, so it is reflected
+in the comments being emitted to the schema for both sorts of agents.
+
+Signed-off-by: Jan Pokorný <jpokorny@redhat.com>
+---
+ config/tools/xml/ccs_update_schema.in |    7 +++++--
+ 1 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/config/tools/xml/ccs_update_schema.in b/config/tools/xml/ccs_update_schema.in
+index d082ed3..a14251b 100644
+--- a/config/tools/xml/ccs_update_schema.in
++++ b/config/tools/xml/ccs_update_schema.in
+@@ -213,6 +213,9 @@ generate_ras() {
+ 		lecho " ras: processing $(basename $i)"
+ 		$i meta-data 2>/dev/null | xsltproc $rngdir/ra2rng.xsl - >> \
+ 			"$outputdir/resources.rng.cache" 2>/dev/null
++		[ "$?" != 0 ] && \
++			echo "  <!-- Problem evaluating metadata for $i" \
++				"-->" >> "$outputdir/resources.rng.cache"
+ 	done
+ 	cat $rngdir/resources.rng.mid >> "$outputdir/resources.rng.cache"
+ 	lecho " ras: generating ref data"
+@@ -299,8 +302,8 @@ generate_fas() {
+ 			xsltproc $rngdir/fence2rng.xsl - >> \
+ 			"$outputdir/fence_agents.rng.cache" 2>/dev/null
+ 		[ "$?" != 0 ] && \
+-			echo "      <!-- No metadata for $i -->" >> \
+-				"$outputdir/fence_agents.rng.cache"
++			echo "      <!-- Problem evaluating metadata for $i" \
++				"-->" >> "$outputdir/fence_agents.rng.cache"
+ 	done
+ 	cat $rngdir/fence.rng.tail >> "$outputdir/fence_agents.rng.cache"
+ }
+

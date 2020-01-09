@@ -1,0 +1,56 @@
+From 77be7299969e63c4874d11aeb692c0a03efa6d5d Mon Sep 17 00:00:00 2001
+From: Bob Peterson <rpeterso@redhat.com>
+Date: Wed, 19 Dec 2012 09:09:27 -0600
+Subject: [PATCH 8/8] fsck.gfs2: Detect and fix mismatch in GFS1 formal inode
+ number
+
+This patch adds code to fsck.gfs2 that checks and fixes
+GFS1 formal inode numbers. In GFS1 only, the formal inode number
+is supposed to match the block address. If it doesn't, it's a
+problem that should be fixed. If the problem goes undetected,
+further conversions to GFS2 via the gfs2_convert tool will treat
+the dinode as not being GFS1, which, in turn, yields the wrong
+type number in the dirent. This causes the file in question to
+be improperly treated (by gfs2_convert) as a GFS2 fifo
+(DT_FIFO==1) rather than a GFS1 file (GFS_FILE_REG==1). The end
+result is something like this, from pass2 in fsck.gfs2, after
+the gfs2_convert:
+Type 'fifo' in dir entry (lost_file_20431, 20431/0x4fcf)
+conflicts with type 'file' in dinode. (Dir entry is stale.)
+
+rhbz#888053
+---
+ gfs2/fsck/pass1.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index d1209e6..9a2398a 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -1309,6 +1309,23 @@ static int handle_di(struct gfs2_sbd *sdp, struct gfs2_buffer_head *bh)
+ 			log_err( _("Address in inode at block #%" PRIu64
+ 				 " (0x%" PRIx64 ") not fixed\n"), block, block);
+ 	}
++	if (sdp->gfs1 && ip->i_di.di_num.no_formal_ino != block) {
++		log_err( _("Inode #%llu (0x%llx): GFS1 formal inode number "
++			   "mismatch: was %llu (0x%llx)\n"),
++			 (unsigned long long)block, (unsigned long long)block,
++			 (unsigned long long)ip->i_di.di_num.no_formal_ino,
++			 (unsigned long long)ip->i_di.di_num.no_formal_ino);
++		if (query( _("Fix formal inode number in inode #%llu"
++			    " (0x%llx)? (y/n) "), (unsigned long long)block,
++			   (unsigned long long)block)) {
++			ip->i_di.di_num.no_formal_ino = block;
++			bmodified(ip->i_bh);
++		} else
++			log_err( _("Inode number in inode at block #%lld "
++				   "(0x%llx) not fixed\n"),
++				 (unsigned long long)block,
++				 (unsigned long long)block);
++	}
+ 	error = handle_ip(sdp, ip);
+ 	fsck_inode_put(&ip);
+ 	return error;
+-- 
+1.7.11.7
+

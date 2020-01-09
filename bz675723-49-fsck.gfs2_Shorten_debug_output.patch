@@ -1,0 +1,202 @@
+commit 180cde49a993e2bd32d4fc0664aad1b6703a6f41
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Fri Jan 6 14:06:09 2012 -0600
+
+    fsck.gfs2: Shorten debug output
+    
+    This patch considerably shortens the debug output of fsck.gfs2 by
+    doing a few things.  First, if fsck is just reporting the setting
+    of block types, it abbreviates the output by just listing other
+    blocks in parenthesis.  Second, some of the key debug messages now give
+    only the block number in hexadecimal rather than both decimal and hex.
+    In one fsck.gfs2 run I did, it reduced the output from 32GB to 6.7GB.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/link.c b/gfs2/fsck/link.c
+index 18aeeb9..47365d8 100644
+--- a/gfs2/fsck/link.c
++++ b/gfs2/fsck/link.c
+@@ -35,22 +35,20 @@ int incr_link_count(uint64_t inode_no, uint64_t referenced_from,
+ 	struct inode_info *ii = NULL;
+ 
+ 	ii = inodetree_find(inode_no);
+-	/* If the list has entries, look for one that matches
+-	 * inode_no */
++	/* If the list has entries, look for one that matches inode_no */
+ 	if (ii) {
+ 		ii->counted_links++;
+-		log_debug( _("Directory %lld (0x%llx) incremented counted "
+-			     "links to %u for %"PRIu64" (0x%" PRIx64 ") "
+-			     "via %s\n"),
++		log_debug( _("Dir (0x%llx) incremented counted "
++			     "links to %u for (0x%llx) via %s\n"),
+ 			   (unsigned long long)referenced_from,
+-			   (unsigned long long)referenced_from,
+-			   ii->counted_links, inode_no, inode_no, why);
++			   ii->counted_links, (unsigned long long)inode_no,
++			   why);
+ 		return 0;
+ 	}
+-	log_debug( _("Ref: %lld (0x%llx) No match found when incrementing "
+-		     "link for %" PRIu64 " (0x%" PRIx64 ")!\n"),
++	log_debug( _("Ref: (0x%llx) No match found when incrementing "
++		     "link for (0x%llx)!\n"),
+ 		   (unsigned long long)referenced_from,
+-		   (unsigned long long)referenced_from, inode_no, inode_no);
++		   (unsigned long long)inode_no);
+ 	/* If no match was found, add a new entry and set its
+ 	 * counted links to 1 */
+ 	ii = inodetree_insert(inode_no);
+@@ -71,24 +69,22 @@ int decr_link_count(uint64_t inode_no, uint64_t referenced_from,
+ 	 * inode_no */
+ 	if (ii) {
+ 		if (!ii->counted_links) {
+-			log_debug( _("Directory %lld (0x%llx)'s link to "
+-			     " %"PRIu64" (0x%" PRIx64 ") via %s is zero!\n"),
+-			   (unsigned long long)referenced_from,
++			log_debug( _("Dir (0x%llx)'s link to "
++			     "(0x%llx) via %s is zero!\n"),
+ 			   (unsigned long long)referenced_from,
+-			   inode_no, inode_no, why);
++			   (unsigned long long)inode_no, why);
+ 			return 0;
+ 		}
+ 		ii->counted_links--;
+-		log_debug( _("Directory %lld (0x%llx) decremented counted "
+-			     "links to %u for %"PRIu64" (0x%" PRIx64 ") "
+-			     "via %s\n"),
+-			   (unsigned long long)referenced_from,
++		log_debug( _("Dir (0x%llx) decremented counted "
++			     "links to %u for (0x%llx) via %s\n"),
+ 			   (unsigned long long)referenced_from,
+-			   ii->counted_links, inode_no, inode_no, why);
++			   ii->counted_links, (unsigned long long)inode_no,
++			   why);
+ 		return 0;
+ 	}
+-	log_debug( _("No match found when decrementing link for %" PRIu64
+-			  " (0x%" PRIx64 ")!\n"), inode_no, inode_no);
++	log_debug( _("No match found when decrementing link for (0x%llx)!\n"),
++		   (unsigned long long)inode_no);
+ 	return -1;
+ 
+ }
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index db7168b..6ddc936 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -107,36 +107,57 @@ int _fsck_blockmap_set(struct gfs2_inode *ip, uint64_t bblock,
+ 		       const char *caller, int fline)
+ {
+ 	int error;
++	static int prev_ino_addr = 0;
++	static enum gfs2_mark_block prev_mark = 0;
++	static int prevcount = 0;
+ 
+ 	if (print_level >= MSG_DEBUG) {
++		if ((ip->i_di.di_num.no_addr == prev_ino_addr) &&
++		    (mark == prev_mark)) {
++			log_info("(0x%llx) ", (unsigned long long)bblock);
++			prevcount++;
++			if (prevcount > 10) {
++				log_info("\n");
++				prevcount = 0;
++			}
+ 		/* I'm circumventing the log levels here on purpose to make the
+ 		   output easier to debug. */
+-		if (ip->i_di.di_num.no_addr == bblock) {
+-			print_fsck_log(MSG_DEBUG, caller, fline,
+-				       _("%s inode found at block "
+-					 "0x%llx: marking as '%s'\n"),
+-				       btype, (unsigned long long)
+-				       ip->i_di.di_num.no_addr,
+-				       block_type_string(mark));
++		} else if (ip->i_di.di_num.no_addr == bblock) {
++			if (prevcount) {
++				log_info("\n");
++				prevcount = 0;
++			}
++			printf( _("(%s:%d) %s inode found at block "
++				  "(0x%llx): marking as '%s'\n"), caller, fline,
++			       btype,
++			       (unsigned long long)ip->i_di.di_num.no_addr,
++			       block_type_string(mark));
++
+ 		} else if (mark == gfs2_bad_block || mark == gfs2_meta_inval) {
+-			print_fsck_log(MSG_DEBUG, caller, fline,
+-				       _("inode 0x%llx references "
+-					 "%s block 0x%llx: "
+-					 "marking as '%s'\n"),
+-				       (unsigned long long)
+-				       ip->i_di.di_num.no_addr,
+-				       btype, (unsigned long long)bblock,
+-				       block_type_string(mark));
++			if (prevcount) {
++				log_info("\n");
++				prevcount = 0;
++			}
++			printf( _("(%s:%d) inode (0x%llx) references %s block"
++				  " (0x%llx): marking as '%s'\n"),
++			       caller, fline,
++			       (unsigned long long)ip->i_di.di_num.no_addr,
++			       btype, (unsigned long long)bblock,
++			       block_type_string(mark));
+ 		} else {
+-			print_fsck_log(MSG_DEBUG, caller, fline,
+-				       _("inode 0x%llx references "
+-					 "%s block 0x%llx: "
+-					 "marking as '%s'\n"),
+-				       (unsigned long long)
+-				       ip->i_di.di_num.no_addr, btype,
+-				       (unsigned long long)bblock,
+-				       block_type_string(mark));
++			if (prevcount) {
++				log_info("\n");
++				prevcount = 0;
++			}
++			printf( _("(%s:%d) inode (0x%llx) references %s block"
++				  " (0x%llx): marking as '%s'\n"),
++			       caller, fline,
++			       (unsigned long long)ip->i_di.di_num.no_addr,
++			       btype, (unsigned long long)bblock,
++			       block_type_string(mark));
+ 		}
++		prev_ino_addr = ip->i_di.di_num.no_addr;
++		prev_mark = mark;
+ 	}
+ 
+ 	/* First, check the rgrp bitmap against what we think it should be.
+@@ -699,7 +720,7 @@ static int check_leaf_blks(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 			if (!leaf.lf_next || error)
+ 				break;
+ 			leaf_no = leaf.lf_next;
+-			log_debug( _("Leaf chain 0x%llx detected.\n"),
++			log_debug( _("Leaf chain (0x%llx) detected.\n"),
+ 				   (unsigned long long)leaf_no);
+ 		} while (1); /* while we have chained leaf blocks */
+ 	} /* for every leaf block */
+diff --git a/gfs2/fsck/pass2.c b/gfs2/fsck/pass2.c
+index e02fdd0..be0e5fe 100644
+--- a/gfs2/fsck/pass2.c
++++ b/gfs2/fsck/pass2.c
+@@ -69,7 +69,7 @@ static int set_dotdot_dir(struct gfs2_sbd *sdp, uint64_t childblock,
+ 	}
+ 	if (di->dinode != childblock) {
+ 		log_debug("'..' doesn't point to what we found: childblock "
+-			  "0x%llx != dinode 0x%llx\n",
++			  "(0x%llx) != dinode (0x%llx)\n",
+ 			  (unsigned long long)childblock,
+ 			  (unsigned long long)di->dinode);
+ 		return -1;
+@@ -86,8 +86,8 @@ static int set_dotdot_dir(struct gfs2_sbd *sdp, uint64_t childblock,
+ 			  (unsigned long long)di->dotdot_parent);
+ 		return -1;
+ 	}
+-	log_debug("Setting '..' for directory block 0x%llx to parent 0x%llx\n",
+-		  (unsigned long long)childblock,
++	log_debug("Setting '..' for directory block (0x%llx) to parent "
++		  "(0x%llx)\n", (unsigned long long)childblock,
+ 		  (unsigned long long)parentblock);
+ 	di->dotdot_parent = parentblock;
+ 	return 0;

@@ -1,0 +1,568 @@
+commit 64b6ff728bc021352f28c15fc71c669ba81f2e84
+Author: Abhi Das <adas@tux.(none)>
+Date:   Tue Jun 14 09:26:39 2011 -0500
+
+    tunegfs2: gfs2-utils should include tunegfs2
+    
+    This is the backport of tunegfs2 into the RHEL6 gfs2-utils. This tool needs to be introduced because it will eventually replace some of the features of gfs2_tool. The tunegfs2 tool is designed to be very similar in operation to the ext filesystem's tune2fs tool and is argument compatible where possible.
+    
+    Resolves: rhbz# 704178
+    Signed-off-by: Abhi Das <adas@redhat.com>
+
+diff --git a/gfs2/Makefile b/gfs2/Makefile
+index 7daf231..a3cf6fc 100644
+--- a/gfs2/Makefile
++++ b/gfs2/Makefile
+@@ -1,4 +1,4 @@
+ include ../make/defines.mk
+ include $(OBJDIR)/make/passthrough.mk
+ 
+-SUBDIRS=libgfs2 convert edit fsck mkfs mount quota tool man init.d
++SUBDIRS=libgfs2 convert edit fsck mkfs mount quota tool tune man init.d
+diff --git a/gfs2/man/Makefile b/gfs2/man/Makefile
+index 8e8e4f1..d4d809f 100644
+--- a/gfs2/man/Makefile
++++ b/gfs2/man/Makefile
+@@ -8,7 +8,8 @@ MANTARGET= \
+ 	mount.gfs2.8 \
+ 	gfs2_quota.8 \
+ 	gfs2_tool.8 \
+-	mkfs.gfs2.8
++	mkfs.gfs2.8 \
++	tunegfs2.8
+ 
+ include ../../make/defines.mk
+ include $(OBJDIR)/make/install.mk
+diff --git a/gfs2/man/tunegfs2.8 b/gfs2/man/tunegfs2.8
+new file mode 100644
+index 0000000..fcdc954
+--- /dev/null
++++ b/gfs2/man/tunegfs2.8
+@@ -0,0 +1,54 @@
++.TH tunegfs2 8
++
++.SH NAME
++tunegfs2 - View and manipulate gfs2 superblocks
++
++.SH SYNOPSIS
++.B tunegfs2
++[\fIOPTIONS\fR]
++/dev/blockdevice
++
++.SH DESCRIPTION
++tunegfs2 allows viewing and manipulating the values contained in a
++GFS or GFS2 superblock. It is able to modify the \fIUUID\fR (on GFS2 only),
++\fIlabel\fR, \fIlockproto\fR and \fIlocktable\fR. Run without any options,
++this command will print out information about the content of the superblock.
++
++The values in the GFS2 superblock are read only on mount. Any
++changes on a live filesystem will not take effect until the next
++time it is mounted. Making changes on a live filesystem is not
++recommended for this reason.
++
++.SH OPTIONS
++
++.TP
++\fB-h\fP
++
++Prints out usage infomration for this command.
++
++.TP
++\fB-L\fP \fI<label>\fR
++
++Change the filesystem label. Note that the GFS2 filesystem label is
++also the locktable name.
++
++.TP
++\fB-o\fP \fI[lockproto=<proto>]\fR \fI[locktable=<table>]\fR
++
++Set mount options. Currently supported options include lockproto and
++locktable
++
++.TP
++\fB-U\fP \fI<uuid>\fR
++
++Set the filesystem UUID
++
++.TP
++\fB-V\fP
++
++Print out the information on the version of the tool.
++
++.SH SEE ALSO
++
++\fBgfs2\fP(5)
++
+diff --git a/gfs2/tune/Makefile b/gfs2/tune/Makefile
+new file mode 100644
+index 0000000..36b8bf7
+--- /dev/null
++++ b/gfs2/tune/Makefile
+@@ -0,0 +1,34 @@
++TARGET= tunegfs2
++
++SBINDIRT=$(TARGET)
++
++all: depends ${TARGET}
++
++include ../../make/defines.mk
++include $(OBJDIR)/make/cobj.mk
++include $(OBJDIR)/make/clean.mk
++include $(OBJDIR)/make/install.mk
++include $(OBJDIR)/make/uninstall.mk
++
++OBJS= 	main.o \
++	super.o
++
++CFLAGS += -D_FILE_OFFSET_BITS=64 -DHELPER_PROGRAM
++CFLAGS += -I${KERNEL_SRC}/fs/gfs2/ -I${KERNEL_SRC}/include/
++CFLAGS += -I$(S)/../include -I$(S)/../libgfs2
++CFLAGS += -I${incdir}
++
++LDFLAGS += -L../libgfs2 -lgfs2
++LDFLAGS += -L${libdir}
++
++LDDEPS += ../libgfs2/libgfs2.a
++
++${TARGET}: ${OBJS} ${LDDEPS}
++	$(CC) -o $@ $^ $(LDFLAGS)
++
++depends:
++	$(MAKE) -C ../libgfs2 all
++
++clean: generalclean
++
++-include $(OBJS:.o=.d)
+diff --git a/gfs2/tune/main.c b/gfs2/tune/main.c
+new file mode 100644
+index 0000000..48fd59f
+--- /dev/null
++++ b/gfs2/tune/main.c
+@@ -0,0 +1,154 @@
++#include <stdio.h>
++#include <stdlib.h>
++#include <libgen.h>
++
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++
++
++#include <libintl.h>
++#define _(String) gettext(String)
++
++#include <string.h>
++#include <errno.h>
++#include <unistd.h>
++#include "tunegfs2.h"
++
++struct tunegfs2 tunegfs2_struct;
++struct tunegfs2 *tfs = &tunegfs2_struct;
++
++
++void parse_mount_options(char *arg)
++{
++	struct opt_map *m;
++	char *s, *c;
++	int l;
++	struct opt_map {
++		char *tag;
++		int *flag;
++		char **val;
++	} map[]= {
++		{ "lockproto=", &tfs->opt_proto, &tfs->proto },
++		{ "locktable=", &tfs->opt_table, &tfs->table },
++		{ NULL, 0, NULL }
++	};
++
++	s = arg;
++	for (m = &map[0]; m->tag; m++) {
++		l = strlen(m->tag);
++		if (!strncmp(s, m->tag, l)) {
++			*(m->flag) = 1;
++			*(m->val) = s + l;
++			c = strchr(*(m->val), ',');
++			if (!c)
++				break;
++			*c='\0';
++			s = c+1;
++		}
++	}
++}
++
++static void usage(char *name)
++{
++	printf("Usage: %s -L <volume label> -U <UUID> -l -o "
++		"<mount options> <device> \n", basename(name));
++}
++
++static void version(void)
++{
++	printf("tunegfs2 (%s %s)\n", __DATE__, __TIME__);
++}
++
++int main(int argc, char **argv)
++{
++	int c, status = 0;
++
++	memset(tfs, 0, sizeof(struct tunegfs2));
++	while((c = getopt(argc, argv, "hL:U:lo:V")) != -1) {
++		switch(c) {
++		case 'h':
++			usage(argv[0]);
++			break;
++		case 'L':
++			tfs->opt_label = 1;
++			tfs->label = optarg;
++			break;
++		case 'U':
++			tfs->opt_uuid = 1;
++			tfs->uuid = optarg;
++			break;
++		case 'l':
++			tfs->opt_list = 1;
++			break;
++		case 'o':
++			parse_mount_options(optarg);
++			break;
++		case 'V':
++			version();
++			break;
++		default:
++			fprintf(stderr, _("Invalid option.\n"));
++			usage(argv[0]);
++			status = -EINVAL;
++			goto out;
++		}
++	}
++
++	tfs->devicename = argv[optind];
++	tfs->fd = open(tfs->devicename, O_RDWR); 
++
++	if (tfs->fd < 0) {
++		fprintf(stderr, _("Unable to open device %s\n"),
++				tfs->devicename);
++		status = -EIO;
++		goto out;
++	}
++
++	status = read_super(tfs);
++	if (status)
++		goto out;
++
++	if (tfs->opt_uuid) {
++		status = change_uuid(tfs, tfs->uuid);
++		if (status)
++			goto out;
++	}
++
++	/* Keep label and table together because they are the same field
++	 * in the superblock */
++
++	if (tfs->opt_label) {
++		status = change_label(tfs, tfs->label);
++		if (status)
++			goto out;
++	}
++
++	if (tfs->opt_table) {
++		status = change_locktable(tfs, tfs->table);
++		if (status)
++			goto out;
++	}
++
++	if (tfs->opt_proto) {
++		status = change_lockproto(tfs, tfs->proto);
++		if (status)
++			goto out;
++	}
++
++	if (tfs->opt_label || tfs->opt_uuid ||
++			tfs->opt_table || tfs->opt_proto) {
++		status = write_super(tfs);
++		if (status)
++			goto out;
++	}
++
++	if (tfs->opt_list) {
++		version();
++		print_super(tfs);
++	}
++
++	close(tfs->fd);
++out:
++	return status;
++}
+diff --git a/gfs2/tune/super.c b/gfs2/tune/super.c
+new file mode 100644
+index 0000000..e7ae4be
+--- /dev/null
++++ b/gfs2/tune/super.c
+@@ -0,0 +1,231 @@
++#include <stdio.h>
++#include <stdlib.h>
++
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <ctype.h>
++#include <string.h>
++#include <libintl.h>
++#define _(String) gettext(String)
++#include <linux/gfs2_ondisk.h>
++#include "libgfs2.h"
++#include "tunegfs2.h"
++
++static int str_to_hexchar(const char *estring)
++{
++	int ch = 0;
++
++	if (isdigit(*estring))
++		ch = (*estring - '0') * 0x10;
++	else if (*estring >= 'a' && *estring <= 'f')
++		ch = (*estring - 'a' + 0x0a) * 0x10;
++	else if (*estring >= 'A' && *estring <= 'F')
++		ch = (*estring - 'A' + 0x0a) * 0x10;
++
++	estring++;
++	if (isdigit(*estring))
++		ch += (*estring - '0');
++	else if (*estring >= 'a' && *estring <= 'f')
++		ch += (*estring - 'a' + 0x0a);
++	else if (*estring >= 'A' && *estring <= 'F')
++		ch += (*estring - 'A' + 0x0a);
++	return ch;
++}
++
++
++
++static const char *uuid2str(const unsigned char *uuid)
++{
++	static char str[64];
++	char *ch;
++	int i;
++
++	memset(str, 0, 64);
++	ch = str;
++	for (i = 0; i < 16; i++) {
++		sprintf(ch, "%02x", uuid[i]);
++		ch += 2;
++		if ((i == 3) || (i == 5) || (i == 7) || (i == 9)) {
++			*ch = '-';
++			ch++;
++		}
++	}
++	return str;
++}
++
++static int str2uuid(const char *newval, char *uuid)
++{
++	char *cp;
++	int i;
++
++	if (strlen(newval) != 36) {
++		fprintf(stderr, _("Invalid UUID specified.\n"));
++		return -EINVAL;
++	}
++
++	cp = uuid;
++	for (i = 0; i < 36; i++) {
++		if ((i == 8) || (i == 13) ||
++				(i == 18) || (i == 23)) {
++			if (newval[i] == '-')
++				continue;
++			fprintf(stderr, _("uuid %s has an invalid format."),
++					newval);
++			return -EINVAL;
++		}
++		if (!isxdigit(newval[i])) {
++			fprintf(stderr, _("uuid %s has an invalid hex "
++						"digit '%c' at offset %d.\n"),
++					newval, newval[i], i + 1);
++			return -EINVAL;
++		}
++		*cp = str_to_hexchar(&newval[i++]);
++		cp++;
++	}
++	return 0;
++}
++
++int read_super(struct tunegfs2 *tfs)
++{
++	void *block;
++	int n;
++       	tfs->sb_start = GFS2_SB_ADDR << GFS2_BASIC_BLOCK_SHIFT;
++	block = malloc(sizeof(char) * GFS2_DEFAULT_BSIZE);
++	n = pread(tfs->fd, block, GFS2_DEFAULT_BSIZE, tfs->sb_start);
++	if (n < 0) {
++		fprintf(stderr, _("Error reading from device"));
++		return errno;
++	}
++	tfs->sb = block;
++	if (be32_to_cpu(tfs->sb->sb_header.mh_magic) != GFS2_MAGIC) {
++		fprintf(stderr, _("Not a GFS/GFS2 device\n"));
++		return -EINVAL;
++	}
++	return 0;
++}
++
++static int is_gfs2_format(const struct tunegfs2 *tfs)
++{
++	return be32_to_cpu(tfs->sb->sb_fs_format) == GFS2_FORMAT_FS;
++}
++
++int print_super(const struct tunegfs2 *tfs)
++{
++	char *fsname = NULL;
++	int table_len = 0, fsname_len = 0;
++
++	fsname = strchr(tfs->sb->sb_locktable, ':');
++	if (fsname) {
++		table_len = fsname - tfs->sb->sb_locktable;
++		fsname_len = GFS2_LOCKNAME_LEN - table_len - 1;
++		fsname++;
++	}
++
++	printf(_("Filesystem volume name: %.*s\n"), fsname_len, fsname);
++	if (is_gfs2_format(tfs))
++		printf(_("Filesystem UUID: %s\n"), uuid2str(tfs->sb->sb_uuid));
++	printf( _("Filesystem magic number: 0x%X\n"), be32_to_cpu(tfs->sb->sb_header.mh_magic));
++	printf(_("Block size: %d\n"), be32_to_cpu(tfs->sb->sb_bsize));
++	printf(_("Block shift: %d\n"), be32_to_cpu(tfs->sb->sb_bsize_shift));
++	printf(_("Root inode: %llu\n"), (unsigned long long)be64_to_cpu(tfs->sb->sb_root_dir.no_addr));
++	if (is_gfs2_format(tfs))
++		printf(_("Master inode: %llu\n"), (unsigned long long)be64_to_cpu(tfs->sb->sb_master_dir.no_addr));
++	printf(_("Lock Protocol: %.*s\n"), GFS2_LOCKNAME_LEN,
++		tfs->sb->sb_lockproto);
++	printf(_("Lock table: %.*s\n"), table_len, tfs->sb->sb_locktable);
++
++	return 0;
++}
++
++int write_super(const struct tunegfs2 *tfs)
++{
++	int n;
++	n = pwrite(tfs->fd, tfs->sb, GFS2_DEFAULT_BSIZE, tfs->sb_start);
++	if (n<0) {
++		fprintf(stderr, _("Unable to write super block\n"));
++		return -errno;
++	}
++	return 0;
++}
++
++int change_label(struct tunegfs2 *tfs, const char *fsname)
++{
++	char *sb_fsname = NULL;
++	int l = strlen(fsname), table_len = 0, fsname_len = 0;
++
++	sb_fsname = strchr(tfs->sb->sb_locktable, ':');
++	if (sb_fsname) {
++		table_len = sb_fsname - tfs->sb->sb_locktable;
++		fsname_len = GFS2_LOCKNAME_LEN - table_len - 1;
++		sb_fsname++;
++	}
++	if (fsname_len < l) {
++		fprintf(stderr, _("Label too long\n"));
++		return -E2BIG;
++	}
++	memset(sb_fsname, '\0', fsname_len);
++	memcpy(sb_fsname, fsname, l);
++	return 0;
++}
++
++int change_uuid(struct tunegfs2 *tfs, const char *str)
++{
++	char uuid[16];
++	int status = 0;
++	if (be32_to_cpu(tfs->sb->sb_header.mh_magic) != GFS2_MAGIC) {
++		fprintf(stderr, _("UUID can be changed for a GFS2"));
++		fprintf(stderr, _(" device only\n"));
++		return -EINVAL;
++	}
++	status = str2uuid(str, uuid);
++	if (!status)
++		memcpy(tfs->sb->sb_uuid, uuid, 16);
++	return status;
++}
++
++
++int change_lockproto(struct tunegfs2 *tfs, const char *lockproto)
++{
++	int l = strlen(lockproto);
++	if (strncmp(lockproto, "lock_dlm", 8) 
++			&& strncmp(lockproto, "lock_nolock", 11)) {
++		fprintf(stderr, _("Incorrect lock protocol specified\n"));
++		return -EINVAL;
++	}
++	memset(tfs->sb->sb_lockproto, '\0', GFS2_LOCKNAME_LEN);
++	strncpy(tfs->sb->sb_lockproto, lockproto, l);
++	return 0;
++}
++
++int change_locktable(struct tunegfs2 *tfs, const char *locktable)
++{
++	char *sb_fsname = NULL;
++	char t_fsname[GFS2_LOCKNAME_LEN];
++	int l = strlen(locktable), table_len = 0, fsname_len = 0;
++
++	sb_fsname = strchr(tfs->sb->sb_locktable, ':');
++	if (sb_fsname) {
++		table_len = sb_fsname - tfs->sb->sb_locktable;
++		fsname_len = GFS2_LOCKNAME_LEN - table_len - 1;
++		sb_fsname++;
++	}
++	/* Gotta check if the existing fsname will allow us to fit in
++	 * the new locktable name */
++	fsname_len = strlen(sb_fsname);
++	if (fsname_len > GFS2_LOCKNAME_LEN - table_len - 1)
++		fsname_len = GFS2_LOCKNAME_LEN - table_len - 1;
++
++	if (l > GFS2_LOCKNAME_LEN - fsname_len - 1) {
++		fprintf(stderr, _("Lock table name too big\n"));
++		return -E2BIG;
++	}
++	memset(t_fsname, '\0', GFS2_LOCKNAME_LEN);
++	strncpy(t_fsname, sb_fsname, fsname_len);
++	memset(tfs->sb->sb_locktable, '\0', GFS2_LOCKNAME_LEN);
++	sprintf(tfs->sb->sb_locktable, "%s:%s", locktable, t_fsname);
++	return 0;
++}
++
+diff --git a/gfs2/tune/tunegfs2.h b/gfs2/tune/tunegfs2.h
+new file mode 100644
+index 0000000..3e2706d
+--- /dev/null
++++ b/gfs2/tune/tunegfs2.h
+@@ -0,0 +1,30 @@
++#ifndef __GFS2_TUNE_DOT_H__
++#define __GFS2_TUNE_DOT_H__
++
++struct tunegfs2 {
++	char *devicename;
++	int fd;
++	unsigned long sb_start;
++	struct gfs2_sb *sb;
++	char *uuid;
++	char *label;
++	char *table;
++	char *proto;
++	char *mount_options;
++	int opt_list;
++	int opt_label;
++	int opt_uuid;
++	int opt_proto;
++	int opt_table;
++};
++
++extern int print_super(const struct tunegfs2 *);
++extern int read_super(struct tunegfs2 *);
++extern int write_super(const struct tunegfs2 *);
++extern int change_uuid(struct tunegfs2 *, const char *uuid);
++extern int change_label(struct tunegfs2 *, const char *label);
++extern int change_lockproto(struct tunegfs2 *, const char *label);
++extern int change_locktable(struct tunegfs2 *, const char *label);
++
++#endif
++

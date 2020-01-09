@@ -1,0 +1,23 @@
+commit ed5f3f4009893b393817ac7c45189cd34bbbf429
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Fri Apr 12 06:47:07 2013 -0700
+
+    fsck.gfs2: Trivial typo fix
+    
+    Fix a typo in u64cmp
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index 8fc445e..d3decd5 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -626,7 +626,7 @@ static int u64cmp(const void *p1, const void *p2)
+ 
+ 	if (a > b)
+ 		return 1;
+-	if (b < b)
++	if (a < b)
+ 		return -1;
+ 
+ 	return 0;

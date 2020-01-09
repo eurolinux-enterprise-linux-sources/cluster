@@ -1,0 +1,24 @@
+commit 3423ebfdd1855cd9dfd760c640416b8e31aaafb7
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Fri Sep 16 16:13:50 2011 +0200
+
+    cman: fix copying uidgid trees to corosync
+    
+    Resolves: rhbz#733345
+    
+    Acked-by: Lon Hohberger <lhh@redhat.com>
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/cman/daemon/cman-preconfig.c b/cman/daemon/cman-preconfig.c
+index 7d60226..13949ec 100644
+--- a/cman/daemon/cman-preconfig.c
++++ b/cman/daemon/cman-preconfig.c
+@@ -1566,7 +1566,7 @@ static int cmanpre_readconfig(struct objdb_iface_ver0 *objdb, const char **error
+ 		ret = copy_tree_to_root(objdb, "amf", 0);
+ 		ret = copy_tree_to_root(objdb, "aisexec", 0);
+ 		ret = copy_tree_to_root(objdb, "service", 1);
+-		ret = copy_tree_to_root(objdb, "uidgid", 0);
++		ret = copy_tree_to_root(objdb, "uidgid", 1);
+ 	}
+ 
+ 	objdb->object_find_create(cluster_parent_handle, "cman", strlen("cman"), &find_handle);

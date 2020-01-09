@@ -1,0 +1,120 @@
+commit 82558210e8ef16821170bb9787c0b46a1abf9bfd
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Thu Feb 21 09:43:22 2013 -0700
+
+    fsck.gfs2: Move function find_free_blk to util.c
+    
+    In a future patch to fsck, function find_free_blk will be called in
+    order to correctly report blocks that will need to be allocated for
+    things such as leaf splits. This patch moves function find_free_blk
+    to a more centralized place, util.c, to that end.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/lost_n_found.c b/gfs2/fsck/lost_n_found.c
+index 06ee485..282d673 100644
+--- a/gfs2/fsck/lost_n_found.c
++++ b/gfs2/fsck/lost_n_found.c
+@@ -86,45 +86,6 @@ static void add_dotdot(struct gfs2_inode *ip)
+ 	}
+ }
+ 
+-static uint64_t find_free_blk(struct gfs2_sbd *sdp)
+-{
+-	struct osi_node *n, *next = NULL;
+-	struct rgrp_tree *rl = NULL;
+-	struct gfs2_rindex *ri;
+-	struct gfs2_rgrp *rg;
+-	unsigned int block, bn = 0, x = 0, y = 0;
+-	unsigned int state;
+-	struct gfs2_buffer_head *bh;
+-
+-	memset(&rg, 0, sizeof(rg));
+-	for (n = osi_first(&sdp->rgtree); n; n = next) {
+-		next = osi_next(n);
+-		rl = (struct rgrp_tree *)n;
+-		if (rl->rg.rg_free)
+-			break;
+-	}
+-
+-	if (n == NULL)
+-		return 0;
+-
+-	ri = &rl->ri;
+-	rg = &rl->rg;
+-
+-	for (block = 0; block < ri->ri_length; block++) {
+-		bh = rl->bh[block];
+-		x = (block) ? sizeof(struct gfs2_meta_header) : sizeof(struct gfs2_rgrp);
+-
+-		for (; x < sdp->bsize; x++)
+-			for (y = 0; y < GFS2_NBBY; y++) {
+-				state = (bh->b_data[x] >> (GFS2_BIT_SIZE * y)) & 0x03;
+-				if (state == GFS2_BLKST_FREE)
+-					return ri->ri_data0 + bn;
+-				bn++;
+-			}
+-	}
+-	return 0;
+-}
+-
+ /* add_inode_to_lf - Add dir entry to lost+found for the inode
+  * @ip: inode to add to lost + found
+  *
+diff --git a/gfs2/fsck/util.c b/gfs2/fsck/util.c
+index 24bae6f..5e14dd4 100644
+--- a/gfs2/fsck/util.c
++++ b/gfs2/fsck/util.c
+@@ -532,3 +532,42 @@ bad_dinode:
+ 	stack;
+ 	return -EPERM;
+ }
++
++uint64_t find_free_blk(struct gfs2_sbd *sdp)
++{
++	struct osi_node *n, *next = NULL;
++	struct rgrp_tree *rl = NULL;
++	struct gfs2_rindex *ri;
++	struct gfs2_rgrp *rg;
++	unsigned int block, bn = 0, x = 0, y = 0;
++	unsigned int state;
++	struct gfs2_buffer_head *bh;
++
++	memset(&rg, 0, sizeof(rg));
++	for (n = osi_first(&sdp->rgtree); n; n = next) {
++		next = osi_next(n);
++		rl = (struct rgrp_tree *)n;
++		if (rl->rg.rg_free)
++			break;
++	}
++
++	if (n == NULL)
++		return 0;
++
++	ri = &rl->ri;
++	rg = &rl->rg;
++
++	for (block = 0; block < ri->ri_length; block++) {
++		bh = rl->bh[block];
++		x = (block) ? sizeof(struct gfs2_meta_header) : sizeof(struct gfs2_rgrp);
++
++		for (; x < sdp->bsize; x++)
++			for (y = 0; y < GFS2_NBBY; y++) {
++				state = (bh->b_data[x] >> (GFS2_BIT_SIZE * y)) & 0x03;
++				if (state == GFS2_BLKST_FREE)
++					return ri->ri_data0 + bn;
++				bn++;
++			}
++	}
++	return 0;
++}
+diff --git a/gfs2/fsck/util.h b/gfs2/fsck/util.h
+index b56fe69..5ee38ad 100644
+--- a/gfs2/fsck/util.h
++++ b/gfs2/fsck/util.h
+@@ -180,4 +180,5 @@ extern void *gfs2_bmap_destroy(struct gfs2_sbd *sdp, struct gfs2_bmap *il);
+ extern int gfs2_blockmap_set(struct gfs2_bmap *il, uint64_t block,
+ 			     enum gfs2_mark_block mark);
+ extern int set_ip_blockmap(struct gfs2_inode *ip, int instree);
++extern uint64_t find_free_blk(struct gfs2_sbd *sdp);
+ #endif /* __UTIL_H__ */

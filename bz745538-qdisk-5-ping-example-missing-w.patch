@@ -1,0 +1,30 @@
+commit 52de5a172d0f5cc273baa6a212f553c1fd020be3
+Author: Lon Hohberger <lhh@redhat.com>
+Date:   Wed Oct 12 11:23:28 2011 -0400
+
+    qdisk: Fix man page example
+    
+    Resolves: rhbz#745538
+    
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+    Signed-off-by: Lon Hohberger <lhh@redhat.com>
+
+diff --git a/cman/man/qdisk.5 b/cman/man/qdisk.5
+index 4070f48..e0b0ff6 100644
+--- a/cman/man/qdisk.5
++++ b/cman/man/qdisk.5
+@@ -1,4 +1,4 @@
+-.TH "QDisk" "5" "20 Feb 2007" "" "Cluster Quorum Disk"
++.TH "QDisk" "5" "12 Oct 2011" "" "Cluster Quorum Disk"
+ .SH "NAME"
+ qdisk \- a disk-based quorum daemon for CMAN / Linux-Cluster
+ .SH "1. Overview"
+@@ -502,7 +502,7 @@ by the qdiskd timeout.
+ .br
+ <quorumd interval="1" tko="10" votes="1" label="testing">
+ .in 12
+-<heuristic program="ping A -c1 -t1" score="1" interval="2" tko="3"/>
++<heuristic program="ping A -c1 -w1" score="1" interval="2" tko="3"/>
+ .br
+ .in 8
+ </quorumd>

@@ -1,0 +1,45 @@
+commit 6e43d334d10de71c088b17ef463589d18e787ef4
+Author: Bob Peterson <bob@krishna.(none)>
+Date:   Mon Oct 31 04:15:20 2011 -0500
+
+    gfs2_edit savemeta: report save statistics more often
+    
+    This patch adds some more reporting of statistics while "savemeta"
+    is being performed.  That will let users know it's still alive
+    while saving a large dinode that has lots of metadata.
+    
+    rhbz#749864
+
+diff --git a/gfs2/edit/savemeta.c b/gfs2/edit/savemeta.c
+index b044d3d..0563cdd 100644
+--- a/gfs2/edit/savemeta.c
++++ b/gfs2/edit/savemeta.c
+@@ -190,9 +190,9 @@ static void warm_fuzzy_stuff(uint64_t wfsblock, int force)
+ 		if (last_fs_block) {
+ 			printf("\r");
+ 			percent = (wfsblock * 100) / last_fs_block;
+-			printf("%" PRIu64 " metadata blocks (%"
+-			       PRIu64 "%%) processed, ", wfsblock,
+-			       percent);
++			printf("%" PRIu64 " inodes processed, %" PRIu64
++			       " blocks saved (%" PRIu64 "%%) processed,",
++			       wfsblock, blks_saved, percent);
+ 			if (force)
+ 				printf("\n");
+ 			fflush(stdout);
+@@ -480,6 +480,7 @@ static void save_inode_data(struct metafd *mfd)
+ 		for (tmp = prev_list->next; tmp != prev_list; tmp = tmp->next){
+ 			mybh = osi_list_entry(tmp, struct gfs2_buffer_head,
+ 					      b_altlist);
++			warm_fuzzy_stuff(block, FALSE);
+ 			save_indirect_blocks(mfd, cur_list, mybh,
+ 					     height, i);
+ 		} /* for blocks at that height */
+@@ -510,6 +511,7 @@ static void save_inode_data(struct metafd *mfd)
+ 				continue;
+ 			old_leaf = leaf_no;
+ 			mybh = bread(&sbd, leaf_no);
++			warm_fuzzy_stuff(block, FALSE);
+ 			if (gfs2_check_meta(mybh, GFS2_METATYPE_LF) == 0)
+ 				save_block(sbd.device_fd, mfd, leaf_no);
+ 			brelse(mybh);

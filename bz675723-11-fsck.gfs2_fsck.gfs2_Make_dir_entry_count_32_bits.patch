@@ -1,0 +1,133 @@
+commit d096c1f723a4221aea5f0fb3d1ed69b33200e753
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Mon Aug 8 14:38:19 2011 -0500
+
+    fsck.gfs2: fsck.gfs2: Make dir entry count 32 bits
+    
+    When counting directory links, fsck.gfs2 was using a 16-bit integer.
+    Therefore, if a directory had more than 65535 links, it would wrap to
+    zero and the counts would be damaged by fsck.gfs2.  Subsequent runs would
+    not find the corruption, but it was there nonetheless.  You would
+    encounter it if you tried to delete enough entries to cause the count
+    to become negative.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/fsck.h b/gfs2/fsck/fsck.h
+index 6353dfc..0fed06b 100644
+--- a/gfs2/fsck/fsck.h
++++ b/gfs2/fsck/fsck.h
+@@ -29,9 +29,9 @@ struct inode_info
+ {
+         struct osi_node node;
+         uint64_t   inode;
+-        uint16_t   di_nlink;   /* the number of links the inode
+-				* thinks it has */
+-        uint16_t   counted_links; /* the number of links we've found */
++        uint32_t   di_nlink;    /* the number of links the inode
++				 * thinks it has */
++        uint32_t   counted_links; /* the number of links we've found */
+ };
+ 
+ struct dir_info
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index 541e468..2db389f 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -300,7 +300,7 @@ static void dirblk_truncate(struct gfs2_inode *ip, struct gfs2_dirent *fixb,
+  *         -1 - error occurred
+  */
+ static int check_entries(struct gfs2_inode *ip, struct gfs2_buffer_head *bh,
+-		  int type, uint16_t *count, struct metawalk_fxns *pass)
++		  int type, uint32_t *count, struct metawalk_fxns *pass)
+ {
+ 	struct gfs2_leaf *leaf = NULL;
+ 	struct gfs2_dirent *dent;
+@@ -597,7 +597,7 @@ static int check_leaf_blks(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 	struct gfs2_buffer_head *lbh;
+ 	int lindex;
+ 	struct gfs2_sbd *sdp = ip->i_sbd;
+-	uint16_t count;
++	uint32_t count;
+ 	int ref_count = 0, exp_count = 0;
+ 
+ 	/* Find the first valid leaf pointer in range and use it as our "old"
+@@ -1372,7 +1372,7 @@ int check_linear_dir(struct gfs2_inode *ip, struct gfs2_buffer_head *bh,
+ 		     struct metawalk_fxns *pass)
+ {
+ 	int error = 0;
+-	uint16_t count = 0;
++	uint32_t count = 0;
+ 
+ 	error = check_entries(ip, bh, DIR_LINEAR, &count, pass);
+ 	if (error < 0) {
+@@ -1405,7 +1405,7 @@ int check_dir(struct gfs2_sbd *sdp, uint64_t block, struct metawalk_fxns *pass)
+ static int remove_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 			 struct gfs2_dirent *prev_de,
+ 			 struct gfs2_buffer_head *bh,
+-			 char *filename, uint16_t *count, void *private)
++			 char *filename, uint32_t *count, void *private)
+ {
+ 	/* the metawalk_fxn's private field must be set to the dentry
+ 	 * block we want to clear */
+diff --git a/gfs2/fsck/metawalk.h b/gfs2/fsck/metawalk.h
+index ea023b6..c15d7b7 100644
+--- a/gfs2/fsck/metawalk.h
++++ b/gfs2/fsck/metawalk.h
+@@ -74,7 +74,7 @@ struct metawalk_fxns {
+ 	int (*check_dentry) (struct gfs2_inode *ip, struct gfs2_dirent *de,
+ 			     struct gfs2_dirent *prev,
+ 			     struct gfs2_buffer_head *bh,
+-			     char *filename, uint16_t *count, void *private);
++			     char *filename, uint32_t *count, void *private);
+ 	int (*check_eattr_entry) (struct gfs2_inode *ip,
+ 				  struct gfs2_buffer_head *leaf_bh,
+ 				  struct gfs2_ea_header *ea_hdr,
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index 477242c..49a8f4e 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -145,7 +145,7 @@ static int resuscitate_metalist(struct gfs2_inode *ip, uint64_t block,
+ static int resuscitate_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 			      struct gfs2_dirent *prev_de,
+ 			      struct gfs2_buffer_head *bh, char *filename,
+-			      uint16_t *count, void *priv)
++			      uint32_t *count, void *priv)
+ {
+ 	struct gfs2_sbd *sdp = ip->i_sbd;
+ 	struct gfs2_dirent dentry, *de;
+diff --git a/gfs2/fsck/pass1b.c b/gfs2/fsck/pass1b.c
+index b4580bf..ce358c4 100644
+--- a/gfs2/fsck/pass1b.c
++++ b/gfs2/fsck/pass1b.c
+@@ -47,7 +47,7 @@ static int check_eattr_extentry(struct gfs2_inode *ip, uint64_t *ea_data_ptr,
+ 				void *private);
+ static int find_dentry(struct gfs2_inode *ip, struct gfs2_dirent *de,
+ 		       struct gfs2_dirent *prev, struct gfs2_buffer_head *bh,
+-		       char *filename, uint16_t *count, void *priv);
++		       char *filename, uint32_t *count, void *priv);
+ 
+ struct metawalk_fxns find_refs = {
+ 	.private = NULL,
+@@ -166,7 +166,7 @@ static int check_dir_dup_ref(struct gfs2_inode *ip,  struct gfs2_dirent *de,
+ static int find_dentry(struct gfs2_inode *ip, struct gfs2_dirent *de,
+ 		       struct gfs2_dirent *prev,
+ 		       struct gfs2_buffer_head *bh, char *filename,
+-		       uint16_t *count, void *priv)
++		       uint32_t *count, void *priv)
+ {
+ 	struct osi_node *n, *next = NULL;
+ 	osi_list_t *tmp2;
+diff --git a/gfs2/fsck/pass2.c b/gfs2/fsck/pass2.c
+index 3e2e31e..abb77c3 100644
+--- a/gfs2/fsck/pass2.c
++++ b/gfs2/fsck/pass2.c
+@@ -166,7 +166,7 @@ struct metawalk_fxns pass2_fxns_delete = {
+ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 		 struct gfs2_dirent *prev_de,
+ 		 struct gfs2_buffer_head *bh, char *filename,
+-		 uint16_t *count, void *priv)
++		 uint32_t *count, void *priv)
+ {
+ 	struct gfs2_sbd *sdp = ip->i_sbd;
+ 	uint8_t q;

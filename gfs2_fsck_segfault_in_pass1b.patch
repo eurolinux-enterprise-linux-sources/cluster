@@ -1,0 +1,26 @@
+commit e9a69100bf11c054baeb659ba9760c713d0162cb
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Fri Jun 3 07:17:25 2011 -0500
+
+    fsck.gfs2: segfault in pass1b
+    
+    The problem occurred when there were duplicate block
+    references in a dinode but all references in the duplicate
+    list are eventually deleted due to other corruption.
+    The fix is an additional check whether the list is empty.
+    
+    rhbz#679080
+
+diff --git a/gfs2/fsck/pass1b.c b/gfs2/fsck/pass1b.c
+index 4d97879..7f79783 100644
+--- a/gfs2/fsck/pass1b.c
++++ b/gfs2/fsck/pass1b.c
+@@ -542,7 +542,7 @@ static int handle_dup_blk(struct gfs2_sbd *sbp, struct duptree *b)
+ 		last_reference = clear_a_reference(sbp, b, &b->ref_inode_list,
+ 						   &dh, 0);
+ 
+-	if (last_reference) {
++	if (last_reference && !osi_list_empty(&b->ref_inode_list)) {
+ 		uint8_t q;
+ 
+ 		/* If we're down to a single reference (and not all references

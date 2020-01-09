@@ -1,0 +1,23 @@
+commit b4029e885bf6d6fee7bee16172be873fa2329ec0
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Thu Sep 16 09:17:42 2010 -0500
+
+    Reported UUID from 'gfs2_edit -p sb' should be lower-case
+    
+    This patch changes the uuid output from uppercase to lowercase.
+    
+    rhbz#694823
+
+diff --git a/gfs2/libgfs2/ondisk.c b/gfs2/libgfs2/ondisk.c
+index 39b9df2..351198a 100644
+--- a/gfs2/libgfs2/ondisk.c
++++ b/gfs2/libgfs2/ondisk.c
+@@ -144,7 +144,7 @@ const char *str_uuid(const unsigned char *uuid)
+ 	memset(str, 0, sizeof(str));
+ 	ch = str;
+ 	for (i = 0; i < 16; i++) {
+-		sprintf(ch, "%02X", uuid[i]);
++		sprintf(ch, "%02x", uuid[i]);
+ 		ch += 2;
+ 		if ((i == 3) || (i == 5) || (i == 7) || (i == 9)) {
+ 			*ch = '-';

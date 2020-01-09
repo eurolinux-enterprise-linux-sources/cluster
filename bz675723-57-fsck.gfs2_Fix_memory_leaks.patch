@@ -1,0 +1,133 @@
+commit 4768e3497c96f80f2776489ea5c65dba4dcd3681
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Fri Jan 6 16:30:30 2012 -0600
+
+    fsck.gfs2: Fix memory leaks
+    
+    This patch fixes some memory leaks in fsck.gfs2 that I discovered
+    by using valgrind.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/fs_recovery.c b/gfs2/fsck/fs_recovery.c
+index 907e37f..d3c742a 100644
+--- a/gfs2/fsck/fs_recovery.c
++++ b/gfs2/fsck/fs_recovery.c
+@@ -611,6 +611,8 @@ int replay_journals(struct gfs2_sbd *sdp, int preen, int force_check,
+ 		inode_put(&sdp->md.journal[i]);
+ 	}
+ 	inode_put(&sdp->md.jiinode);
++	free(sdp->md.journal);
++	sdp->md.journal = NULL;
+ 	/* Sync the buffers to disk so we get a fresh start. */
+ 	fsync(sdp->device_fd);
+ 	return error;
+diff --git a/gfs2/fsck/initialize.c b/gfs2/fsck/initialize.c
+index 06121bc..95a6a65 100644
+--- a/gfs2/fsck/initialize.c
++++ b/gfs2/fsck/initialize.c
+@@ -641,12 +641,16 @@ static int init_system_inodes(struct gfs2_sbd *sdp)
+ 		}
+ 		do_init_statfs(sdp);
+ 	}
+-	buf = malloc(sdp->md.statfs->i_di.di_size);
+-	// FIXME: handle failed malloc
+-	gfs2_readi(sdp->md.statfs, buf, 0, sdp->md.statfs->i_di.di_size);
+-	/* call gfs2_inum_range_in() to retrieve range */
+-	gfs2_statfs_change_in(&sc, buf);
+-	free(buf);
++	if (sdp->md.statfs->i_di.di_size) {
++		buf = malloc(sdp->md.statfs->i_di.di_size);
++		if (buf) {
++			gfs2_readi(sdp->md.statfs, buf, 0,
++				   sdp->md.statfs->i_di.di_size);
++			/* call gfs2_inum_range_in() to retrieve range */
++			gfs2_statfs_change_in(&sc, buf);
++			free(buf);
++		}
++	}
+ 
+ 	if (sdp->gfs1)
+ 		sdp->md.qinode = inode_read(sdp, sbd1->sb_quota_di.no_addr);
+diff --git a/gfs2/fsck/main.c b/gfs2/fsck/main.c
+index 7b768b0..676b676 100644
+--- a/gfs2/fsck/main.c
++++ b/gfs2/fsck/main.c
+@@ -349,6 +349,8 @@ int main(int argc, char **argv)
+ 	inode_put(&sdp->md.statfs);
+ 	for (j = 0; j < sdp->md.journals; j++)
+ 		inode_put(&sdp->md.journal[j]);
++	free(sdp->md.journal);
++	sdp->md.journal = NULL;
+ 	inode_put(&sdp->md.jiinode);
+ 	inode_put(&sdp->md.riinode);
+ 	inode_put(&sdp->md.qinode);
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index c313c3b..8723adc 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -1168,8 +1168,10 @@ static int build_and_check_metalist(struct gfs2_inode *ip, osi_list_t *mlp,
+ 			for (ptr = (uint64_t *)(bh->b_data + head_size);
+ 			     (char *)ptr < (bh->b_data + ip->i_sbd->bsize);
+ 			     ptr++) {
+-				if (skip_this_pass || fsck_abort)
++				if (skip_this_pass || fsck_abort) {
++					free_metalist(ip, mlp);
+ 					return FSCK_OK;
++				}
+ 				nbh = NULL;
+ 
+ 				if (!*ptr)
+@@ -1281,6 +1283,7 @@ int check_metatree(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 	error = build_and_check_metalist(ip, &metalist[0], pass);
+ 	if (error) {
+ 		stack;
++		free_metalist(ip, &metalist[0]);
+ 		return error;
+ 	}
+ 
+@@ -1317,8 +1320,10 @@ int check_metatree(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 		last_reported_fblock = -10000000;
+ 
+ 	while (error >= 0 && !osi_list_empty(list)) {
+-		if (fsck_abort)
++		if (fsck_abort) {
++			free_metalist(ip, &metalist[0]);
+ 			return 0;
++		}
+ 		bh = osi_list_entry(list->next, struct gfs2_buffer_head,
+ 				    b_altlist);
+ 
+@@ -1371,6 +1376,7 @@ int check_metatree(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 			    (unsigned long long)ip->i_di.di_num.no_addr);
+ 		fflush(stdout);
+ 	}
++	free_metalist(ip, &metalist[0]);
+ 	return error;
+ }
+ 
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index de5de2b..b3ef7d4 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -430,6 +430,7 @@ static int check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 			fsck_blockmap_set(ip, block, _("bad indirect"),
+ 					  gfs2_meta_inval);
+ 			brelse(nbh);
++			nbh = NULL;
+ 			return 1;
+ 		}
+ 		brelse(nbh);
+@@ -439,8 +440,11 @@ static int check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 
+ 	bc->indir_count++;
+ 	if (found_dup) {
+-		if (nbh)
++		if (nbh) {
+ 			brelse(nbh);
++			nbh = NULL;
++			*bh = NULL;
++		}
+ 		return 1; /* don't process the metadata again */
+ 	} else
+ 		fsck_blockmap_set(ip, block, _("indirect"),

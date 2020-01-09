@@ -1,0 +1,36 @@
+commit b950000e35d922fe24de64d798f59f712ba7017f
+Author: David Teigland <teigland@redhat.com>
+Date:   Fri Nov 11 14:30:44 2011 -0600
+
+    gfs_controld: don't ignore dlmc_fs_register error
+    
+    gfs_controld ignores an error returned by dlm_controld for
+    dlmc_fs_register() during mount.  This results in a successful
+    mount, but dlm/gfs recovery not being coordinated. The mount
+    should return an error instead.
+    
+    bz 753300
+    
+    Signed-off-by: David Teigland <teigland@redhat.com>
+
+diff --git a/group/gfs_controld/cpg-new.c b/group/gfs_controld/cpg-new.c
+index b3f25ae..fd20250 100644
+--- a/group/gfs_controld/cpg-new.c
++++ b/group/gfs_controld/cpg-new.c
+@@ -778,11 +778,12 @@ void process_dlmcontrol(int ci)
+ 		if (result) {
+ 			/* shouldn't happen */
+ 			log_error("process_dlmcontrol register %d", result);
+-		} else
++			client_reply_join_full(mg, result);
++			mg->mount_client_notified = 1;
++		} else {
+ 			log_group(mg, "process_dlmcontrol register %d", result);
+-
+-		mg->dlm_registered = 1;
+-
++			mg->dlm_registered = 1;
++		}
+ 	} else {
+ 		log_group(mg, "process_dlmcontrol unknown type %d", type);
+ 	}

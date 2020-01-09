@@ -1,0 +1,23 @@
+commit 544a70cbcf94410d277fd7123a1943c8d2bef790
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Tue Dec 18 14:50:43 2012 +0100
+
+    qdiskd: change log level for an error message
+    
+    Resolves: rhbz#888318
+    
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/cman/qdisk/main.c b/cman/qdisk/main.c
+index 8eb9a3a..68e72c7 100644
+--- a/cman/qdisk/main.c
++++ b/cman/qdisk/main.c
+@@ -1742,7 +1742,7 @@ get_static_config_data(qd_ctx *ctx, int ccsfd)
+ 		ctx->qc_token_timeout = atoi(val);
+ 		free(val);
+ 		if (ctx->qc_token_timeout < 10000) {
+-			logt_print(LOG_DEBUG, "Token timeout %d is too fast "
++			logt_print(LOG_ERR, "Token timeout %d is too fast "
+ 				   "to use with qdiskd!\n",
+ 				   ctx->qc_token_timeout);
+ 			return -1;

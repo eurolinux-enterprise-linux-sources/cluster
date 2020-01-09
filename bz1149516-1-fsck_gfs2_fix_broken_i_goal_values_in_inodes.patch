@@ -1,0 +1,173 @@
+commit de32500c7e24d6da99c2653e9af4884e52c380d2
+Author: Abhi Das <adas@redhat.com>
+Date:   Tue Dec 23 13:36:15 2014 -0600
+
+    fsck.gfs2: fix broken i_goal values in inodes
+    
+    This patch allows fsck.gfs2 to fix bad values for the i_goal
+    field in inodes that could arise from a gfs1->gfs2 conversion
+    or through other corruption
+    
+    Resolves: rhbz#1149516
+    Signed-off-by: Abhi Das <adas@redhat.com>
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index 79ee241..075c2e1 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -1333,7 +1333,8 @@ static int build_and_check_metalist(struct gfs2_inode *ip, osi_list_t *mlp,
+  */
+ static int check_data(struct gfs2_inode *ip, struct metawalk_fxns *pass,
+ 		      struct gfs2_buffer_head *bh, int head_size,
+-		      uint64_t *blks_checked, uint64_t *error_blk)
++		      uint64_t *last_block, uint64_t *blks_checked,
++		      uint64_t *error_blk)
+ {
+ 	int error = 0, rc = 0;
+ 	uint64_t block, *ptr;
+@@ -1348,7 +1349,7 @@ static int check_data(struct gfs2_inode *ip, struct metawalk_fxns *pass,
+ 
+ 		if (skip_this_pass || fsck_abort)
+ 			return error;
+-		block =  be64_to_cpu(*ptr);
++		*last_block = block =  be64_to_cpu(*ptr);
+ 		/* It's important that we don't call valid_block() and
+ 		   bypass calling check_data on invalid blocks because that
+ 		   would defeat the rangecheck_block related functions in
+@@ -1428,7 +1429,7 @@ int check_metatree(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 	struct gfs2_buffer_head *bh;
+ 	uint32_t height = ip->i_di.di_height;
+ 	int  i, head_size;
+-	uint64_t blks_checked = 0;
++	uint64_t blks_checked = 0, last_block = 0;
+ 	int error, rc;
+ 	int metadata_clean = 0;
+ 	uint64_t error_blk = 0;
+@@ -1452,6 +1453,9 @@ int check_metatree(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 	 * comprise the directory hash table, so we perform the directory
+ 	 * checks and exit. */
+         if (is_dir(&ip->i_di, ip->i_sbd->gfs1)) {
++		last_block = ip->i_di.di_num.no_addr;
++		if (pass->check_i_goal)
++			pass->check_i_goal(ip, last_block, pass->private);
+ 		if (!(ip->i_di.di_flags & GFS2_DIF_EXHASH))
+ 			goto out;
+ 		/* check validity of leaf blocks and leaf chains */
+@@ -1478,7 +1482,7 @@ int check_metatree(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 		
+ 		if (pass->check_data)
+ 			error = check_data(ip, pass, bh, head_size,
+-					   &blks_checked, &error_blk);
++					   &last_block, &blks_checked, &error_blk);
+ 
+ 		if (pass->big_file_msg && ip->i_di.di_blocks > COMFORTABLE_BLKS)
+ 			pass->big_file_msg(ip, blks_checked);
+@@ -1491,6 +1495,8 @@ int check_metatree(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 			    (unsigned long long)ip->i_di.di_num.no_addr);
+ 		fflush(stdout);
+ 	}
++	if (!error && pass->check_i_goal)
++		pass->check_i_goal(ip, last_block, pass->private);
+ undo_metalist:
+ 	if (!error)
+ 		goto out;
+diff --git a/gfs2/fsck/metawalk.h b/gfs2/fsck/metawalk.h
+index 5e30bfe..d4ffc62 100644
+--- a/gfs2/fsck/metawalk.h
++++ b/gfs2/fsck/metawalk.h
+@@ -90,6 +90,7 @@ enum meta_check_rc {
+  * check_dentry:
+  * check_eattr_entry:
+  * check_eattr_extentry:
++ * check_i_goal:
+  */
+ struct metawalk_fxns {
+ 	void *private;
+@@ -140,6 +141,8 @@ struct metawalk_fxns {
+ 				     struct gfs2_ea_header *ea_hdr,
+ 				     struct gfs2_ea_header *ea_hdr_prev,
+ 				     void *private);
++	int (*check_i_goal) (struct gfs2_inode *ip, uint64_t goal_blk,
++			     void *private);
+ 	int (*finish_eattr_indir) (struct gfs2_inode *ip, int leaf_pointers,
+ 				   int leaf_pointer_errors, void *private);
+ 	void (*big_file_msg) (struct gfs2_inode *ip, uint64_t blks_checked);
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index 7208335..9606101 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -60,6 +60,7 @@ static int check_extended_leaf_eattr(struct gfs2_inode *ip, uint64_t *data_ptr,
+ 				     struct gfs2_ea_header *ea_hdr,
+ 				     struct gfs2_ea_header *ea_hdr_prev,
+ 				     void *private);
++static int check_i_goal(struct gfs2_inode *ip, uint64_t goal_blk, void *private);
+ static int finish_eattr_indir(struct gfs2_inode *ip, int leaf_pointers,
+ 			      int leaf_pointer_errors, void *private);
+ static int invalidate_metadata(struct gfs2_inode *ip, uint64_t block,
+@@ -97,6 +98,7 @@ struct metawalk_fxns pass1_fxns = {
+ 	.check_dentry = NULL,
+ 	.check_eattr_entry = check_eattr_entries,
+ 	.check_eattr_extentry = check_extended_leaf_eattr,
++	.check_i_goal = NULL,
+ 	.finish_eattr_indir = finish_eattr_indir,
+ 	.big_file_msg = big_file_comfort,
+ 	.repair_leaf = pass1_repair_leaf,
+@@ -790,6 +792,48 @@ static int check_extended_leaf_eattr(struct gfs2_inode *ip, uint64_t *data_ptr,
+ 	return error;
+ }
+ 
++/**
++ * check_i_goal
++ * @ip
++ * @goal_blk: What the goal block should be for this inode
++ *
++ * The goal block for a regular file is typically the last
++ * data block of the file. If we can't get the right value,
++ * the inode metadata block is the next best thing.
++ *
++ * Returns: 0 if corrected, 1 if not corrected
++ */
++static int check_i_goal(struct gfs2_inode *ip, uint64_t goal_blk,
++			void *private)
++{
++	struct gfs2_sbd *sdp = ip->i_sbd;
++
++	if (fsck_system_inode(sdp, ip->i_di.di_num.no_addr))
++		return 0;
++	if (!goal_blk)
++		goal_blk = ip->i_di.di_num.no_addr;
++	if (ip->i_di.di_goal_meta != goal_blk ||
++	    ip->i_di.di_goal_data != goal_blk) {
++		log_err( _("Error: inode %llu (0x%llx) has invalid "
++			   "allocation goal block %llu (0x%llx). Should"
++			   " be %llu (0x%llx)\n"),
++			 (unsigned long long)ip->i_di.di_num.no_addr,
++			 (unsigned long long)ip->i_di.di_num.no_addr,
++			 (unsigned long long)ip->i_di.di_goal_meta,
++			 (unsigned long long)ip->i_di.di_goal_meta,
++			 (unsigned long long)goal_blk,
++			 (unsigned long long)goal_blk);
++		if (query( _("Fix the invalid goal block? (y/n) "))) {
++			ip->i_di.di_goal_meta = ip->i_di.di_goal_data = goal_blk;
++			bmodified(ip->i_bh);
++		} else {
++			log_err(_("Invalid goal block not fixed.\n"));
++			return 1;
++		}
++	}
++	return 0;
++}
++
+ static int check_eattr_leaf(struct gfs2_inode *ip, uint64_t block,
+ 			    uint64_t parent, struct gfs2_buffer_head **bh,
+ 			    void *private)
+@@ -1464,6 +1508,9 @@ int pass1(struct gfs2_sbd *sdp)
+ 	/* Make sure the system inodes are okay & represented in the bitmap. */
+ 	check_system_inodes(sdp);
+ 
++	/* Turn the check_i_goal function ON for the non-system inodes */
++	pass1_fxns.check_i_goal = check_i_goal;
++
+ 	/* So, do we do a depth first search starting at the root
+ 	 * inode, or use the rg bitmaps, or just read every fs block
+ 	 * to find the inodes?  If we use the depth first search, why

@@ -1,0 +1,1354 @@
+commit 5d6ebaf9b606580f8a7221a226d3afa58aa159a1
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Mon Aug 8 08:41:36 2011 -0500
+
+    fsck.gfs2: Make functions use sdp rather than sbp
+    
+    For years, the fsck.gfs2 tool used two different variable names to refer to the
+    same structure: sdp and sbp.  This patch changes them all to sdp so they are now
+    consistent with the kernel code.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/fsck.h b/gfs2/fsck/fsck.h
+index bc14b88..25bc3b9 100644
+--- a/gfs2/fsck/fsck.h
++++ b/gfs2/fsck/fsck.h
+@@ -92,21 +92,21 @@ enum rgindex_trust_level { /* how far can we trust our RG index? */
+ 			   must have been converted from gfs2_convert. */
+ };
+ 
+-extern struct gfs2_inode *fsck_load_inode(struct gfs2_sbd *sbp, uint64_t block);
++extern struct gfs2_inode *fsck_load_inode(struct gfs2_sbd *sdp, uint64_t block);
+ extern struct gfs2_inode *fsck_inode_get(struct gfs2_sbd *sdp,
+ 				  struct gfs2_buffer_head *bh);
+ extern void fsck_inode_put(struct gfs2_inode **ip);
+ 
+-extern int initialize(struct gfs2_sbd *sbp, int force_check, int preen,
++extern int initialize(struct gfs2_sbd *sdp, int force_check, int preen,
+ 		      int *all_clean);
+-extern void destroy(struct gfs2_sbd *sbp);
+-extern int pass1(struct gfs2_sbd *sbp);
+-extern int pass1b(struct gfs2_sbd *sbp);
+-extern int pass1c(struct gfs2_sbd *sbp);
+-extern int pass2(struct gfs2_sbd *sbp);
+-extern int pass3(struct gfs2_sbd *sbp);
+-extern int pass4(struct gfs2_sbd *sbp);
+-extern int pass5(struct gfs2_sbd *sbp);
++extern void destroy(struct gfs2_sbd *sdp);
++extern int pass1(struct gfs2_sbd *sdp);
++extern int pass1b(struct gfs2_sbd *sdp);
++extern int pass1c(struct gfs2_sbd *sdp);
++extern int pass2(struct gfs2_sbd *sdp);
++extern int pass3(struct gfs2_sbd *sdp);
++extern int pass4(struct gfs2_sbd *sdp);
++extern int pass5(struct gfs2_sbd *sdp);
+ extern int rg_repair(struct gfs2_sbd *sdp, int trust_lvl, int *rg_count,
+ 		     int *sane);
+ extern void gfs2_dup_free(void);
+diff --git a/gfs2/fsck/initialize.c b/gfs2/fsck/initialize.c
+index 5a6fc6e..ff620c0 100644
+--- a/gfs2/fsck/initialize.c
++++ b/gfs2/fsck/initialize.c
+@@ -36,26 +36,26 @@ static struct master_dir fix_md;
+  * Change the lock protocol so nobody can mount the fs
+  *
+  */
+-static int block_mounters(struct gfs2_sbd *sbp, int block_em)
++static int block_mounters(struct gfs2_sbd *sdp, int block_em)
+ {
+ 	if(block_em) {
+ 		/* verify it starts with lock_ */
+-		if(!strncmp(sbp->sd_sb.sb_lockproto, "lock_", 5)) {
++		if(!strncmp(sdp->sd_sb.sb_lockproto, "lock_", 5)) {
+ 			/* Change lock_ to fsck_ */
+-			memcpy(sbp->sd_sb.sb_lockproto, "fsck_", 5);
++			memcpy(sdp->sd_sb.sb_lockproto, "fsck_", 5);
+ 		}
+ 		/* FIXME: Need to do other verification in the else
+ 		 * case */
+ 	} else {
+ 		/* verify it starts with fsck_ */
+ 		/* verify it starts with lock_ */
+-		if(!strncmp(sbp->sd_sb.sb_lockproto, "fsck_", 5)) {
++		if(!strncmp(sdp->sd_sb.sb_lockproto, "fsck_", 5)) {
+ 			/* Change fsck_ to lock_ */
+-			memcpy(sbp->sd_sb.sb_lockproto, "lock_", 5);
++			memcpy(sdp->sd_sb.sb_lockproto, "lock_", 5);
+ 		}
+ 	}
+ 
+-	if(write_sb(sbp)) {
++	if(write_sb(sdp)) {
+ 		stack;
+ 		return -1;
+ 	}
+@@ -1093,7 +1093,7 @@ static int fill_super_block(struct gfs2_sbd *sdp)
+  * initialize - initialize superblock pointer
+  *
+  */
+-int initialize(struct gfs2_sbd *sbp, int force_check, int preen,
++int initialize(struct gfs2_sbd *sdp, int force_check, int preen,
+ 	       int *all_clean)
+ {
+ 	int clean_journals = 0, open_flag;
+@@ -1105,8 +1105,8 @@ int initialize(struct gfs2_sbd *sbp, int force_check, int preen,
+ 	else
+ 		open_flag = O_RDWR | O_EXCL;
+ 
+-	sbp->device_fd = open(opts.device, open_flag);
+-	if (sbp->device_fd < 0) {
++	sdp->device_fd = open(opts.device, open_flag);
++	if (sdp->device_fd < 0) {
+ 		int is_mounted, ro;
+ 
+ 		if (open_flag == O_RDONLY || errno != EBUSY) {
+@@ -1120,10 +1120,10 @@ int initialize(struct gfs2_sbd *sbp, int force_check, int preen,
+ 		   allow it.)  We use is_pathname_mounted here even though
+ 		   we're specifying a device name, not a path name.  The
+ 		   function checks for device as well. */
+-		strncpy(sbp->device_name, opts.device,
+-			sizeof(sbp->device_name));
+-		sbp->path_name = sbp->device_name; /* This gets overwritten */
+-		is_mounted = is_pathname_mounted(sbp, &ro);
++		strncpy(sdp->device_name, opts.device,
++			sizeof(sdp->device_name));
++		sdp->path_name = sdp->device_name; /* This gets overwritten */
++		is_mounted = is_pathname_mounted(sdp, &ro);
+ 		/* If the device is busy, but not because it's mounted, fail.
+ 		   This protects against cases where the file system is LVM
+ 		   and perhaps mounted on a different node. */
+@@ -1138,49 +1138,49 @@ int initialize(struct gfs2_sbd *sbp, int force_check, int preen,
+ 		/* The device is mounted RO, so it's likely our own root
+ 		   file system.  We can only do so much to protect the users
+ 		   from themselves.  Try opening without O_EXCL. */
+-		if ((sbp->device_fd = open(opts.device, O_RDWR)) < 0)
++		if ((sdp->device_fd = open(opts.device, O_RDWR)) < 0)
+ 			goto mount_fail;
+ 
+ 		was_mounted_ro = 1;
+ 	}
+ 
+ 	/* read in sb from disk */
+-	if (fill_super_block(sbp))
++	if (fill_super_block(sdp))
+ 		return FSCK_ERROR;
+ 
+ 	/* Change lock protocol to be fsck_* instead of lock_* */
+-	if(!opts.no && preen_is_safe(sbp, preen, force_check)) {
+-		if(block_mounters(sbp, 1)) {
++	if(!opts.no && preen_is_safe(sdp, preen, force_check)) {
++		if(block_mounters(sdp, 1)) {
+ 			log_err( _("Unable to block other mounters\n"));
+ 			return FSCK_USAGE;
+ 		}
+ 	}
+ 
+ 	/* Get master dinode */
+-	sbp->master_dir = inode_read(sbp, sbp->sd_sb.sb_master_dir.no_addr);
+-	if (sbp->master_dir->i_di.di_header.mh_magic != GFS2_MAGIC ||
+-	    sbp->master_dir->i_di.di_header.mh_type != GFS2_METATYPE_DI ||
+-	    !sbp->master_dir->i_di.di_size) {
+-		inode_put(&sbp->master_dir);
+-		rebuild_master(sbp);
+-		sbp->master_dir = inode_read(sbp,
+-					     sbp->sd_sb.sb_master_dir.no_addr);
++	sdp->master_dir = inode_read(sdp, sdp->sd_sb.sb_master_dir.no_addr);
++	if (sdp->master_dir->i_di.di_header.mh_magic != GFS2_MAGIC ||
++	    sdp->master_dir->i_di.di_header.mh_type != GFS2_METATYPE_DI ||
++	    !sdp->master_dir->i_di.di_size) {
++		inode_put(&sdp->master_dir);
++		rebuild_master(sdp);
++		sdp->master_dir = inode_read(sdp,
++					     sdp->sd_sb.sb_master_dir.no_addr);
+ 	}
+ 
+ 	/* Look up the "per_node" inode.  If there are journals missing, we
+ 	   need to figure out what's missing from per_node. And we need all
+ 	   our journals to be there before we can replay them. */
+-	lookup_per_node(sbp, 0);
++	lookup_per_node(sdp, 0);
+ 
+ 	/* verify various things */
+ 
+-	if(replay_journals(sbp, preen, force_check, &clean_journals)) {
+-		if(!opts.no && preen_is_safe(sbp, preen, force_check))
+-			block_mounters(sbp, 0);
++	if(replay_journals(sdp, preen, force_check, &clean_journals)) {
++		if(!opts.no && preen_is_safe(sdp, preen, force_check))
++			block_mounters(sdp, 0);
+ 		stack;
+ 		return FSCK_ERROR;
+ 	}
+-	if (sbp->md.journals == clean_journals)
++	if (sdp->md.journals == clean_journals)
+ 		*all_clean = 1;
+ 	else {
+ 		if (force_check || !preen)
+@@ -1190,7 +1190,7 @@ int initialize(struct gfs2_sbd *sbp, int force_check, int preen,
+ 	if (!force_check && *all_clean && preen)
+ 		return FSCK_OK;
+ 
+-	if (init_system_inodes(sbp))
++	if (init_system_inodes(sdp))
+ 		return FSCK_ERROR;
+ 
+ 	return FSCK_OK;
+@@ -1200,30 +1200,30 @@ mount_fail:
+ 	return FSCK_USAGE;
+ }
+ 
+-static void destroy_sbp(struct gfs2_sbd *sbp)
++static void destroy_sdp(struct gfs2_sbd *sdp)
+ {
+ 	if(!opts.no) {
+-		if(block_mounters(sbp, 0)) {
++		if(block_mounters(sdp, 0)) {
+ 			log_warn( _("Unable to unblock other mounters - manual intervention required\n"));
+ 			log_warn( _("Use 'gfs2_tool sb <device> proto' to fix\n"));
+ 		}
+ 		log_info( _("Syncing the device.\n"));
+-		fsync(sbp->device_fd);
++		fsync(sdp->device_fd);
+ 	}
+-	empty_super_block(sbp);
+-	close(sbp->device_fd);
++	empty_super_block(sdp);
++	close(sdp->device_fd);
+ 	if (was_mounted_ro && errors_corrected) {
+-		sbp->device_fd = open("/proc/sys/vm/drop_caches", O_WRONLY);
+-		if (sbp->device_fd >= 0) {
+-			write(sbp->device_fd, "2", 1);
+-			close(sbp->device_fd);
++		sdp->device_fd = open("/proc/sys/vm/drop_caches", O_WRONLY);
++		if (sdp->device_fd >= 0) {
++			write(sdp->device_fd, "2", 1);
++			close(sdp->device_fd);
+ 		} else
+ 			log_err( _("fsck.gfs2: Non-fatal error dropping "
+ 				   "caches.\n"));
+ 	}
+ }
+ 
+-void destroy(struct gfs2_sbd *sbp)
++void destroy(struct gfs2_sbd *sdp)
+ {
+-	destroy_sbp(sbp);
++	destroy_sdp(sdp);
+ }
+diff --git a/gfs2/fsck/main.c b/gfs2/fsck/main.c
+index c68e3da..a50a0d7 100644
+--- a/gfs2/fsck/main.c
++++ b/gfs2/fsck/main.c
+@@ -216,7 +216,7 @@ static void check_statfs(struct gfs2_sbd *sdp)
+ int main(int argc, char **argv)
+ {
+ 	struct gfs2_sbd sb;
+-	struct gfs2_sbd *sbp = &sb;
++	struct gfs2_sbd *sdp = &sb;
+ 	int j;
+ 	int error = 0;
+ 	int all_clean = 0;
+@@ -224,18 +224,18 @@ int main(int argc, char **argv)
+ 	setlocale(LC_ALL, "");
+ 	textdomain("gfs2-utils");
+ 
+-	memset(sbp, 0, sizeof(*sbp));
++	memset(sdp, 0, sizeof(*sdp));
+ 
+ 	if((error = read_cmdline(argc, argv, &opts)))
+ 		exit(error);
+ 	setbuf(stdout, NULL);
+ 	log_notice( _("Initializing fsck\n"));
+-	if ((error = initialize(sbp, force_check, preen, &all_clean)))
++	if ((error = initialize(sdp, force_check, preen, &all_clean)))
+ 		exit(error);
+ 
+ 	if (!force_check && all_clean && preen) {
+ 		log_err( _("%s: clean.\n"), opts.device);
+-		destroy(sbp);
++		destroy(sdp);
+ 		exit(FSCK_OK);
+ 	}
+ 
+@@ -243,7 +243,7 @@ int main(int argc, char **argv)
+ 	log_notice( _("Starting pass1\n"));
+ 	pass = "pass 1";
+ 	last_reported_block = 0;
+-	if ((error = pass1(sbp)))
++	if ((error = pass1(sdp)))
+ 		exit(error);
+ 	if (skip_this_pass || fsck_abort) {
+ 		skip_this_pass = FALSE;
+@@ -256,7 +256,7 @@ int main(int argc, char **argv)
+ 		last_reported_block = 0;
+ 		pass = "pass 1b";
+ 		log_notice( _("Starting pass1b\n"));
+-		if((error = pass1b(sbp)))
++		if((error = pass1b(sdp)))
+ 			exit(error);
+ 		if (skip_this_pass || fsck_abort) {
+ 			skip_this_pass = FALSE;
+@@ -269,7 +269,7 @@ int main(int argc, char **argv)
+ 		last_reported_block = 0;
+ 		pass = "pass 1c";
+ 		log_notice( _("Starting pass1c\n"));
+-		if((error = pass1c(sbp)))
++		if((error = pass1c(sdp)))
+ 			exit(error);
+ 		if (skip_this_pass || fsck_abort) {
+ 			skip_this_pass = FALSE;
+@@ -282,7 +282,7 @@ int main(int argc, char **argv)
+ 		last_reported_block = 0;
+ 		pass = "pass 2";
+ 		log_notice( _("Starting pass2\n"));
+-		if ((error = pass2(sbp)))
++		if ((error = pass2(sdp)))
+ 			exit(error);
+ 		if (skip_this_pass || fsck_abort) {
+ 			skip_this_pass = FALSE;
+@@ -295,7 +295,7 @@ int main(int argc, char **argv)
+ 		last_reported_block = 0;
+ 		pass = "pass 3";
+ 		log_notice( _("Starting pass3\n"));
+-		if ((error = pass3(sbp)))
++		if ((error = pass3(sdp)))
+ 			exit(error);
+ 		if (skip_this_pass || fsck_abort) {
+ 			skip_this_pass = FALSE;
+@@ -308,7 +308,7 @@ int main(int argc, char **argv)
+ 		last_reported_block = 0;
+ 		pass = "pass 4";
+ 		log_notice( _("Starting pass4\n"));
+-		if ((error = pass4(sbp)))
++		if ((error = pass4(sdp)))
+ 			exit(error);
+ 		if (skip_this_pass || fsck_abort) {
+ 			skip_this_pass = FALSE;
+@@ -321,7 +321,7 @@ int main(int argc, char **argv)
+ 		last_reported_block = 0;
+ 		pass = "pass 5";
+ 		log_notice( _("Starting pass5\n"));
+-		if ((error = pass5(sbp)))
++		if ((error = pass5(sdp)))
+ 			exit(error);
+ 		if (skip_this_pass || fsck_abort) {
+ 			skip_this_pass = FALSE;
+@@ -335,27 +335,27 @@ int main(int argc, char **argv)
+ 	}
+ 
+ 	if (!fsck_abort)
+-		check_statfs(sbp);
++		check_statfs(sdp);
+ 
+ 	/* Free up our system inodes */
+-	inode_put(&sbp->md.inum);
+-	inode_put(&sbp->md.statfs);
+-	for (j = 0; j < sbp->md.journals; j++)
+-		inode_put(&sbp->md.journal[j]);
+-	inode_put(&sbp->md.jiinode);
+-	inode_put(&sbp->md.riinode);
+-	inode_put(&sbp->md.qinode);
+-	inode_put(&sbp->md.pinode);
+-	inode_put(&sbp->md.rooti);
+-	inode_put(&sbp->master_dir);
++	inode_put(&sdp->md.inum);
++	inode_put(&sdp->md.statfs);
++	for (j = 0; j < sdp->md.journals; j++)
++		inode_put(&sdp->md.journal[j]);
++	inode_put(&sdp->md.jiinode);
++	inode_put(&sdp->md.riinode);
++	inode_put(&sdp->md.qinode);
++	inode_put(&sdp->md.pinode);
++	inode_put(&sdp->md.rooti);
++	inode_put(&sdp->master_dir);
+ 	if (lf_dip)
+ 		inode_put(&lf_dip);
+ 
+ 	if (!opts.no && errors_corrected)
+ 		log_notice( _("Writing changes to disk\n"));
+-	fsync(sbp->device_fd);
+-	destroy(sbp);
+-	log_notice( _("gfs2_fsck complete    \n"));
++	fsync(sdp->device_fd);
++	destroy(sdp);
++	log_notice( _("gfs2_fsck complete\n"));
+ 
+ 	if (!error) {
+ 		if (!errors_found)
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index cffff8a..0e443fa 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -181,14 +181,14 @@ struct gfs2_inode *fsck_system_inode(struct gfs2_sbd *sdp, uint64_t block)
+ 
+ /* fsck_load_inode - same as gfs2_load_inode() in libgfs2 but system inodes
+    get special treatment. */
+-struct gfs2_inode *fsck_load_inode(struct gfs2_sbd *sbp, uint64_t block)
++struct gfs2_inode *fsck_load_inode(struct gfs2_sbd *sdp, uint64_t block)
+ {
+ 	struct gfs2_inode *ip = NULL;
+ 
+-	ip = fsck_system_inode(sbp, block);
++	ip = fsck_system_inode(sdp, block);
+ 	if (ip)
+ 		return ip;
+-	return inode_read(sbp, block);
++	return inode_read(sdp, block);
+ }
+ 
+ /* fsck_inode_get - same as inode_get() in libgfs2 but system inodes
+@@ -596,7 +596,7 @@ static int check_leaf_blks(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 	uint64_t first_ok_leaf;
+ 	struct gfs2_buffer_head *lbh;
+ 	int lindex;
+-	struct gfs2_sbd *sbp = ip->i_sbd;
++	struct gfs2_sbd *sdp = ip->i_sbd;
+ 	uint16_t count;
+ 	int ref_count = 0, exp_count = 0;
+ 
+@@ -607,7 +607,7 @@ static int check_leaf_blks(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 	for(lindex = 0; lindex < (1 << ip->i_di.di_depth); lindex++) {
+ 		gfs2_get_leaf_nr(ip, lindex, &leaf_no);
+ 		if (gfs2_check_range(ip->i_sbd, leaf_no) == 0) {
+-			lbh = bread(sbp, leaf_no);
++			lbh = bread(sdp, leaf_no);
+ 			/* Make sure it's really a valid leaf block. */
+ 			if (gfs2_check_meta(lbh, GFS2_METATYPE_LF) == 0) {
+ 				brelse(lbh);
+@@ -674,7 +674,7 @@ static int check_leaf_blks(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 			}
+ 
+ 			/* Try to read in the leaf block. */
+-			lbh = bread(sbp, leaf_no);
++			lbh = bread(sdp, leaf_no);
+ 			/* Make sure it's really a valid leaf block. */
+ 			if (gfs2_check_meta(lbh, GFS2_METATYPE_LF)) {
+ 				warn_and_patch(ip, &leaf_no, &bad_leaf,
+@@ -738,7 +738,7 @@ static int check_leaf_blks(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 
+ 				if(count != leaf.lf_entries) {
+ 					brelse(lbh);
+-					lbh = bread(sbp, leaf_no);
++					lbh = bread(sdp, leaf_no);
+ 					gfs2_leaf_in(&leaf, lbh);
+ 
+ 					log_err( _("Leaf %llu (0x%llx) entry "
+@@ -1383,12 +1383,12 @@ int check_linear_dir(struct gfs2_inode *ip, struct gfs2_buffer_head *bh,
+ 	return error;
+ }
+ 
+-int check_dir(struct gfs2_sbd *sbp, uint64_t block, struct metawalk_fxns *pass)
++int check_dir(struct gfs2_sbd *sdp, uint64_t block, struct metawalk_fxns *pass)
+ {
+ 	struct gfs2_inode *ip;
+ 	int error = 0;
+ 
+-	ip = fsck_load_inode(sbp, block);
++	ip = fsck_load_inode(sdp, block);
+ 
+ 	if(ip->i_di.di_flags & GFS2_DIF_EXHASH)
+ 		error = check_leaf_blks(ip, pass);
+@@ -1425,16 +1425,18 @@ static int remove_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 
+ }
+ 
+-int remove_dentry_from_dir(struct gfs2_sbd *sbp, uint64_t dir,
++int remove_dentry_from_dir(struct gfs2_sbd *sdp, uint64_t dir,
+ 			   uint64_t dentryblock)
+ {
+ 	struct metawalk_fxns remove_dentry_fxns = {0};
+ 	uint8_t q;
+ 	int error;
+ 
+-	log_debug( _("Removing dentry %" PRIu64 " (0x%" PRIx64 ") from directory %"
+-			  PRIu64" (0x%" PRIx64 ")\n"), dentryblock, dentryblock, dir, dir);
+-	if(gfs2_check_range(sbp, dir)) {
++	log_debug( _("Removing dentry %llu (0x%llx) from directory %llu"
++		     " (0x%llx)\n"), (unsigned long long)dentryblock,
++		  (unsigned long long)dentryblock,
++		  (unsigned long long)dir, (unsigned long long)dir);
++	if(gfs2_check_range(sdp, dir)) {
+ 		log_err( _("Parent directory out of range\n"));
+ 		return 1;
+ 	}
+@@ -1448,7 +1450,7 @@ int remove_dentry_from_dir(struct gfs2_sbd *sbp, uint64_t dir,
+ 	}
+ 	/* Need to run check_dir with a private var of dentryblock,
+ 	 * and fxns that remove that dentry if found */
+-	error = check_dir(sbp, dir, &remove_dentry_fxns);
++	error = check_dir(sdp, dir, &remove_dentry_fxns);
+ 
+ 	return error;
+ }
+diff --git a/gfs2/fsck/metawalk.h b/gfs2/fsck/metawalk.h
+index 3ee12fe..c1e61fb 100644
+--- a/gfs2/fsck/metawalk.h
++++ b/gfs2/fsck/metawalk.h
+@@ -9,11 +9,11 @@ struct metawalk_fxns;
+ extern int check_inode_eattr(struct gfs2_inode *ip,
+ 			     struct metawalk_fxns *pass);
+ extern int check_metatree(struct gfs2_inode *ip, struct metawalk_fxns *pass);
+-extern int check_dir(struct gfs2_sbd *sbp, uint64_t block,
++extern int check_dir(struct gfs2_sbd *sdp, uint64_t block,
+ 		     struct metawalk_fxns *pass);
+ extern int check_linear_dir(struct gfs2_inode *ip, struct gfs2_buffer_head *bh,
+ 			    struct metawalk_fxns *pass);
+-extern int remove_dentry_from_dir(struct gfs2_sbd *sbp, uint64_t dir,
++extern int remove_dentry_from_dir(struct gfs2_sbd *sdp, uint64_t dir,
+ 						   uint64_t dentryblock);
+ extern int delete_block(struct gfs2_inode *ip, uint64_t block,
+ 		 struct gfs2_buffer_head **bh, const char *btype,
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index a7eb96d..ef2714f 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -1187,7 +1187,7 @@ static int handle_di(struct gfs2_sbd *sdp, struct gfs2_buffer_head *bh)
+ static int check_system_inode(struct gfs2_sbd *sdp,
+ 			      struct gfs2_inode **sysinode,
+ 			      const char *filename,
+-			      int builder(struct gfs2_sbd *sbp),
++			      int builder(struct gfs2_sbd *sdp),
+ 			      enum gfs2_mark_block mark)
+ {
+ 	uint64_t iblock = 0;
+@@ -1375,7 +1375,7 @@ static int check_system_inodes(struct gfs2_sbd *sdp)
+  * inodes size
+  * dir info
+  */
+-int pass1(struct gfs2_sbd *sbp)
++int pass1(struct gfs2_sbd *sdp)
+ {
+ 	struct gfs2_buffer_head *bh;
+ 	osi_list_t *tmp;
+@@ -1394,7 +1394,7 @@ int pass1(struct gfs2_sbd *sbp)
+ 	 * the sweeps start that we won't find otherwise? */
+ 
+ 	/* Make sure the system inodes are okay & represented in the bitmap. */
+-	check_system_inodes(sbp);
++	check_system_inodes(sdp);
+ 
+ 	/* So, do we do a depth first search starting at the root
+ 	 * inode, or use the rg bitmaps, or just read every fs block
+@@ -1405,7 +1405,7 @@ int pass1(struct gfs2_sbd *sbp)
+ 	 * uses the rg bitmaps, so maybe that's the best way to start
+ 	 * things - we can change the method later if necessary.
+ 	 */
+-	for (tmp = sbp->rglist.next; tmp != &sbp->rglist;
++	for (tmp = sdp->rglist.next; tmp != &sdp->rglist;
+ 	     tmp = tmp->next, rg_count++) {
+ 		log_debug( _("Checking metadata in Resource Group #%" PRIu64 "\n"),
+ 				 rg_count);
+@@ -1421,7 +1421,7 @@ int pass1(struct gfs2_sbd *sbp)
+ 			}
+ 			/* rgrps and bitmaps don't have bits to represent
+ 			   their blocks, so don't do this:
+-			check_n_fix_bitmap(sbp, rgd->ri.ri_addr + i,
++			check_n_fix_bitmap(sdp, rgd->ri.ri_addr + i,
+ 			gfs2_meta_rgrp);*/
+ 		}
+ 
+@@ -1444,7 +1444,7 @@ int pass1(struct gfs2_sbd *sbp)
+ 				skip_this_pass = FALSE;
+ 				fflush(stdout);
+ 			}
+-			if (fsck_system_inode(sbp, block)) {
++			if (fsck_system_inode(sdp, block)) {
+ 				log_debug(_("Already processed system inode "
+ 					    "%lld (0x%llx)\n"),
+ 					  (unsigned long long)block,
+@@ -1452,7 +1452,7 @@ int pass1(struct gfs2_sbd *sbp)
+ 				first = 0;
+ 				continue;
+ 			}
+-			bh = bread(sbp, block);
++			bh = bread(sdp, block);
+ 
+ 			/*log_debug( _("Checking metadata block #%" PRIu64
+ 			  " (0x%" PRIx64 ")\n"), block, block);*/
+@@ -1468,9 +1468,9 @@ int pass1(struct gfs2_sbd *sbp)
+ 					brelse(bh);
+ 					return FSCK_ERROR;
+ 				}
+-				check_n_fix_bitmap(sbp, block,
++				check_n_fix_bitmap(sdp, block,
+ 						   gfs2_block_free);
+-			} else if (handle_di(sbp, bh) < 0) {
++			} else if (handle_di(sdp, bh) < 0) {
+ 				stack;
+ 				brelse(bh);
+ 				return FSCK_ERROR;
+diff --git a/gfs2/fsck/pass1b.c b/gfs2/fsck/pass1b.c
+index 7f79783..01d479c 100644
+--- a/gfs2/fsck/pass1b.c
++++ b/gfs2/fsck/pass1b.c
+@@ -88,12 +88,12 @@ static int check_eattr_indir(struct gfs2_inode *ip, uint64_t block,
+ 			     uint64_t parent, struct gfs2_buffer_head **bh,
+ 			     void *private)
+ {
+-	struct gfs2_sbd *sbp = ip->i_sbd;
++	struct gfs2_sbd *sdp = ip->i_sbd;
+ 	int error;
+ 
+ 	error = add_duplicate_ref(ip, block, ref_as_ea, 1, INODE_VALID);
+ 	if (!error)
+-		*bh = bread(sbp, block);
++		*bh = bread(sdp, block);
+ 
+ 	return error;
+ }
+@@ -102,12 +102,12 @@ static int check_eattr_leaf(struct gfs2_inode *ip, uint64_t block,
+ 			    uint64_t parent, struct gfs2_buffer_head **bh,
+ 			    void *private)
+ {
+-	struct gfs2_sbd *sbp = ip->i_sbd;
++	struct gfs2_sbd *sdp = ip->i_sbd;
+ 	int error;
+ 
+ 	error = add_duplicate_ref(ip, block, ref_as_ea, 1, INODE_VALID);
+ 	if (!error)
+-		*bh = bread(sbp, block);
++		*bh = bread(sdp, block);
+ 	return error;
+ }
+ 
+@@ -318,15 +318,12 @@ static int clear_eattr_extentry(struct gfs2_inode *ip, uint64_t *ea_data_ptr,
+ }
+ 
+ /* Finds all references to duplicate blocks in the metadata */
+-static int find_block_ref(struct gfs2_sbd *sbp, uint64_t inode)
++static int find_block_ref(struct gfs2_sbd *sdp, uint64_t inode)
+ {
+ 	struct gfs2_inode *ip;
+ 	int error = 0;
+ 
+-	ip = fsck_load_inode(sbp, inode); /* bread, inode_get */
+-	/*log_debug( _("Checking inode %" PRIu64 " (0x%" PRIx64 ")'s "
+-		     "metatree for references to duplicate blocks)\n"),
+-		     inode, inode);*/
++	ip = fsck_load_inode(sdp, inode); /* bread, inode_get */
+ 	/* double-check the meta header just to be sure it's metadata */
+ 	if (ip->i_di.di_header.mh_magic != GFS2_MAGIC ||
+ 	    ip->i_di.di_header.mh_type != GFS2_METATYPE_DI) {
+@@ -386,7 +383,7 @@ static void log_inode_reference(struct duptree *b, osi_list_t *tmp, int inval)
+ 		  (unsigned long long)b->block, reftypestring);
+ }
+ 
+-static int clear_a_reference(struct gfs2_sbd *sbp, struct duptree *b,
++static int clear_a_reference(struct gfs2_sbd *sdp, struct duptree *b,
+ 			     osi_list_t *ref_list, struct dup_handler *dh,
+ 			     int inval)
+ {
+@@ -423,7 +420,7 @@ static int clear_a_reference(struct gfs2_sbd *sbp, struct duptree *b,
+ 			  (unsigned long long)id->block_no);
+ 		clear_dup_fxns.private = (void *) dh;
+ 		/* Clear the EAs for the inode first */
+-		ip = fsck_load_inode(sbp, id->block_no);
++		ip = fsck_load_inode(sdp, id->block_no);
+ 		check_inode_eattr(ip, &clear_dup_fxns);
+ 		/* If the dup wasn't only in the EA, clear the inode */
+ 		if (id->reftypecount[ref_as_data] ||
+@@ -444,7 +441,7 @@ static int clear_a_reference(struct gfs2_sbd *sbp, struct duptree *b,
+ 	return 0;
+ }
+ 
+-static int handle_dup_blk(struct gfs2_sbd *sbp, struct duptree *b)
++static int handle_dup_blk(struct gfs2_sbd *sdp, struct duptree *b)
+ {
+ 	struct gfs2_inode *ip;
+ 	osi_list_t *tmp;
+@@ -480,7 +477,7 @@ static int handle_dup_blk(struct gfs2_sbd *sbp, struct duptree *b)
+ 		struct gfs2_buffer_head *bh;
+ 		uint32_t cmagic;
+ 
+-		bh = bread(sbp, b->block);
++		bh = bread(sdp, b->block);
+ 		cmagic = ((struct gfs2_meta_header *)(bh->b_data))->mh_magic;
+ 		brelse(bh);
+ 		if (be32_to_cpu(cmagic) == GFS2_MAGIC) {
+@@ -502,7 +499,7 @@ static int handle_dup_blk(struct gfs2_sbd *sbp, struct duptree *b)
+ 				log_warn( _("Clearing inode %lld (0x%llx)...\n"),
+ 					 (unsigned long long)id->block_no,
+ 					 (unsigned long long)id->block_no);
+-				ip = fsck_load_inode(sbp, id->block_no);
++				ip = fsck_load_inode(sdp, id->block_no);
+ 				ii = inodetree_find(ip->i_di.di_num.no_addr);
+ 				if (ii)
+ 					inodetree_delete(ii);
+@@ -536,10 +533,10 @@ static int handle_dup_blk(struct gfs2_sbd *sbp, struct duptree *b)
+ 	osi_list_foreach(tmp, &b->ref_inode_list)
+ 		log_inode_reference(b, tmp, 0);
+ 
+-	last_reference = clear_a_reference(sbp, b, &b->ref_invinode_list,
++	last_reference = clear_a_reference(sdp, b, &b->ref_invinode_list,
+ 					   &dh, 1);
+ 	if (!last_reference)
+-		last_reference = clear_a_reference(sbp, b, &b->ref_inode_list,
++		last_reference = clear_a_reference(sdp, b, &b->ref_inode_list,
+ 						   &dh, 0);
+ 
+ 	if (last_reference && !osi_list_empty(&b->ref_inode_list)) {
+@@ -556,7 +553,7 @@ static int handle_dup_blk(struct gfs2_sbd *sbp, struct duptree *b)
+ 			     "reference in inode %lld (0x%llx).\n"),
+ 			   (unsigned long long)id->block_no,
+ 			   (unsigned long long)id->block_no);
+-		ip = fsck_load_inode(sbp, id->block_no);
++		ip = fsck_load_inode(sdp, id->block_no);
+ 
+ 		q = block_type(id->block_no);
+ 		if (q == gfs2_inode_invalid) {
+@@ -597,7 +594,7 @@ static int handle_dup_blk(struct gfs2_sbd *sbp, struct duptree *b)
+ /* Pass 1b handles finding the previous inode for a duplicate block
+  * When found, store the inodes pointing to the duplicate block for
+  * use in pass2 */
+-int pass1b(struct gfs2_sbd *sbp)
++int pass1b(struct gfs2_sbd *sdp)
+ {
+ 	struct duptree *b;
+ 	uint64_t i;
+@@ -641,7 +638,7 @@ int pass1b(struct gfs2_sbd *sbp)
+ 				   (unsigned long long)i);
+ 
+ 		warm_fuzzy_stuff(i);
+-		if (find_block_ref(sbp, i) < 0) {
++		if (find_block_ref(sdp, i) < 0) {
+ 			stack;
+ 			rc = FSCK_ERROR;
+ 			goto out;
+@@ -656,7 +653,7 @@ out:
+ 		next = osi_next(n);
+                 b = (struct duptree *)n;
+ 		if (!skip_this_pass && !rc) /* no error & not asked to skip the rest */
+-			handle_dup_blk(sbp, b);
++			handle_dup_blk(sdp, b);
+ 		/* Do not attempt to free the dup_blocks list or its parts
+ 		   here because any func that calls check_metatree needs
+ 		   to check duplicate status based on this linked list.
+diff --git a/gfs2/fsck/pass1c.c b/gfs2/fsck/pass1c.c
+index 10b92ed..2a86e14 100644
+--- a/gfs2/fsck/pass1c.c
++++ b/gfs2/fsck/pass1c.c
+@@ -71,11 +71,11 @@ static int check_eattr_indir(struct gfs2_inode *ip, uint64_t block,
+ 		      uint64_t parent, struct gfs2_buffer_head **bh,
+ 		      void *private)
+ {
+-	struct gfs2_sbd *sbp = ip->i_sbd;
++	struct gfs2_sbd *sdp = ip->i_sbd;
+ 	uint8_t q;
+ 	struct gfs2_buffer_head *indir_bh = NULL;
+ 
+-	if(gfs2_check_range(sbp, block)) {
++	if(gfs2_check_range(sdp, block)) {
+ 		log_err( _("Extended attributes indirect block #%llu"
+ 			" (0x%llx) for inode #%llu"
+ 			" (0x%llx) out of range...removing\n"),
+@@ -97,7 +97,7 @@ static int check_eattr_indir(struct gfs2_inode *ip, uint64_t block,
+ 		return ask_remove_eattr(ip);
+ 	}
+ 	else
+-		indir_bh = bread(sbp, block);
++		indir_bh = bread(sdp, block);
+ 
+ 	*bh = indir_bh;
+ 	return 0;
+@@ -107,10 +107,10 @@ static int check_eattr_leaf(struct gfs2_inode *ip, uint64_t block,
+ 		     uint64_t parent, struct gfs2_buffer_head **bh,
+ 		     void *private)
+ {
+-	struct gfs2_sbd *sbp = ip->i_sbd;
++	struct gfs2_sbd *sdp = ip->i_sbd;
+ 	uint8_t q;
+ 
+-	if(gfs2_check_range(sbp, block)) {
++	if(gfs2_check_range(sdp, block)) {
+ 		log_err( _("Extended attributes block for inode #%llu"
+ 			" (0x%llx) out of range.\n"),
+ 			(unsigned long long)ip->i_di.di_num.no_addr,
+@@ -126,7 +126,7 @@ static int check_eattr_leaf(struct gfs2_inode *ip, uint64_t block,
+ 		return ask_remove_eattr(ip);
+ 	}
+ 	else 
+-		*bh = bread(sbp, block);
++		*bh = bread(sdp, block);
+ 
+ 	return 0;
+ }
+@@ -204,11 +204,11 @@ static int check_eattr_extentry(struct gfs2_inode *ip, uint64_t *ea_ptr,
+ 			 struct gfs2_ea_header *ea_hdr_prev, void *private)
+ {
+ 	uint8_t q;
+-	struct gfs2_sbd *sbp = ip->i_sbd;
++	struct gfs2_sbd *sdp = ip->i_sbd;
+ 
+ 	q = block_type(be64_to_cpu(*ea_ptr));
+ 	if(q != gfs2_meta_eattr) {
+-		if(remove_eattr_entry(sbp, leaf_bh, ea_hdr, ea_hdr_prev)){
++		if(remove_eattr_entry(sdp, leaf_bh, ea_hdr, ea_hdr_prev)){
+ 			stack;
+ 			return -1;
+ 		}
+@@ -219,7 +219,7 @@ static int check_eattr_extentry(struct gfs2_inode *ip, uint64_t *ea_ptr,
+ 
+ /* Go over all inodes with extended attributes and verify the EAs are
+  * valid */
+-int pass1c(struct gfs2_sbd *sbp)
++int pass1c(struct gfs2_sbd *sdp)
+ {
+ 	uint64_t block_no = 0;
+ 	struct gfs2_buffer_head *bh;
+@@ -236,19 +236,20 @@ int pass1c(struct gfs2_sbd *sbp)
+ 	pass1c_fxns.private = NULL;
+ 
+ 	log_info( _("Looking for inodes containing ea blocks...\n"));
+-	osi_list_foreach_safe(tmp, &sbp->eattr_blocks.list, x) {
++	osi_list_foreach_safe(tmp, &sdp->eattr_blocks.list, x) {
+ 		ea_block = osi_list_entry(tmp, struct special_blocks, list);
+ 		block_no = ea_block->block;
+ 		warm_fuzzy_stuff(block_no);
+ 
+ 		if (skip_this_pass || fsck_abort) /* if asked to skip the rest */
+ 			return FSCK_OK;
+-		bh = bread(sbp, block_no);
++		bh = bread(sdp, block_no);
+ 		if (!gfs2_check_meta(bh, GFS2_METATYPE_DI)) { /* if a dinode */
+-			log_info( _("EA in inode %"PRIu64" (0x%" PRIx64 ")\n"),
+-				 block_no, block_no);
+-			gfs2_special_clear(&sbp->eattr_blocks, block_no);
+-			ip = fsck_inode_get(sbp, bh);
++			log_info( _("EA in inode %llu (0x%llx)\n"),
++				 (unsigned long long)block_no,
++				 (unsigned long long)block_no);
++			gfs2_special_clear(&sdp->eattr_blocks, block_no);
++			ip = fsck_inode_get(sdp, bh);
+ 			ip->bh_owned = 1;
+ 
+ 			log_debug( _("Found eattr at %llu (0x%llx)\n"),
+diff --git a/gfs2/fsck/pass2.c b/gfs2/fsck/pass2.c
+index 90c6940..0993d2a 100644
+--- a/gfs2/fsck/pass2.c
++++ b/gfs2/fsck/pass2.c
+@@ -18,7 +18,7 @@
+ 
+ /* Set children's parent inode in dir_info structure - ext2 does not set
+  * dotdot inode here, but instead in pass3 - should we? */
+-static int set_parent_dir(struct gfs2_sbd *sbp, uint64_t childblock,
++static int set_parent_dir(struct gfs2_sbd *sdp, uint64_t childblock,
+ 			  uint64_t parentblock)
+ {
+ 	struct dir_info *di;
+@@ -54,7 +54,7 @@ static int set_parent_dir(struct gfs2_sbd *sbp, uint64_t childblock,
+ }
+ 
+ /* Set's the child's '..' directory inode number in dir_info structure */
+-static int set_dotdot_dir(struct gfs2_sbd *sbp, uint64_t childblock,
++static int set_dotdot_dir(struct gfs2_sbd *sdp, uint64_t childblock,
+ 				   uint64_t parentblock)
+ {
+ 	struct dir_info *di;
+@@ -64,7 +64,7 @@ static int set_dotdot_dir(struct gfs2_sbd *sbp, uint64_t childblock,
+ 		if(di->dinode == childblock) {
+ 			/* Special case for root inode because we set
+ 			 * it earlier */
+-			if(di->dotdot_parent && sbp->md.rooti->i_di.di_num.no_addr
++			if(di->dotdot_parent && sdp->md.rooti->i_di.di_num.no_addr
+ 			   != di->dinode) {
+ 				/* This should never happen */
+ 				log_crit( _("Dotdot parent already set for"
+@@ -166,7 +166,7 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 		 struct gfs2_buffer_head *bh, char *filename,
+ 		 uint16_t *count, void *priv)
+ {
+-	struct gfs2_sbd *sbp = ip->i_sbd;
++	struct gfs2_sbd *sdp = ip->i_sbd;
+ 	uint8_t q;
+ 	char tmp_name[MAX_FILENAME];
+ 	uint64_t entryblock;
+@@ -266,7 +266,7 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 		if (ip->i_di.di_num.no_addr == entryblock)
+ 			entry_ip = ip;
+ 		else
+-			entry_ip = fsck_load_inode(sbp, entryblock);
++			entry_ip = fsck_load_inode(sdp, entryblock);
+ 		check_inode_eattr(entry_ip, &pass2_fxns_delete);
+ 		check_metatree(entry_ip, &pass2_fxns_delete);
+ 		if (entry_ip != ip)
+@@ -340,7 +340,7 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 		if (ip->i_di.di_num.no_addr == entryblock)
+ 			entry_ip = ip;
+ 		else
+-			entry_ip = fsck_load_inode(sbp, entryblock);
++			entry_ip = fsck_load_inode(sdp, entryblock);
+ 		check_inode_eattr(entry_ip, &clear_eattrs);
+ 		if (entry_ip != ip)
+ 			fsck_inode_put(&entry_ip);
+@@ -364,7 +364,7 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 			if (ip->i_di.di_num.no_addr == entryblock)
+ 				entry_ip = ip;
+ 			else
+-				entry_ip = fsck_load_inode(sbp, entryblock);
++				entry_ip = fsck_load_inode(sdp, entryblock);
+ 			check_inode_eattr(entry_ip, &clear_eattrs);
+ 			if (entry_ip != ip)
+ 				fsck_inode_put(&entry_ip);
+@@ -395,7 +395,7 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 			if (ip->i_di.di_num.no_addr == entryblock)
+ 				entry_ip = ip;
+ 			else
+-				entry_ip = fsck_load_inode(sbp, entryblock);
++				entry_ip = fsck_load_inode(sdp, entryblock);
+ 			check_inode_eattr(entry_ip, &clear_eattrs);
+ 			if (entry_ip != ip)
+ 				fsck_inode_put(&entry_ip);
+@@ -423,7 +423,7 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 			if (ip->i_di.di_num.no_addr == entryblock)
+ 				entry_ip = ip;
+ 			else
+-				entry_ip = fsck_load_inode(sbp, entryblock);
++				entry_ip = fsck_load_inode(sdp, entryblock);
+ 			check_inode_eattr(entry_ip, &clear_eattrs);
+ 			if (entry_ip != ip)
+ 				fsck_inode_put(&entry_ip);
+@@ -443,7 +443,7 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 			if (ip->i_di.di_num.no_addr == entryblock)
+ 				entry_ip = ip;
+ 			else
+-				entry_ip = fsck_load_inode(sbp, entryblock);
++				entry_ip = fsck_load_inode(sdp, entryblock);
+ 			check_inode_eattr(entry_ip, &clear_eattrs);
+ 			if (entry_ip != ip)
+ 				fsck_inode_put(&entry_ip);
+@@ -455,7 +455,7 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 		/* Add the address this entry is pointing to
+ 		 * to this inode's dotdot_parent in
+ 		 * dir_info */
+-		if(set_dotdot_dir(sbp, ip->i_di.di_num.no_addr, entryblock)) {
++		if(set_dotdot_dir(sdp, ip->i_di.di_num.no_addr, entryblock)) {
+ 			stack;
+ 			return -1;
+ 		}
+@@ -474,7 +474,7 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 	}
+ 
+ 	/*log_debug( _("Found plain directory dentry\n"));*/
+-	error = set_parent_dir(sbp, entryblock, ip->i_di.di_num.no_addr);
++	error = set_parent_dir(sdp, entryblock, ip->i_di.di_num.no_addr);
+ 	if(error > 0) {
+ 		log_err( _("%s: Hard link to block %" PRIu64" (0x%" PRIx64
+ 			   ") detected.\n"), tmp_name, entryblock, entryblock);
+@@ -519,7 +519,7 @@ struct metawalk_fxns pass2_fxns = {
+ /* Check system directory inode                                           */
+ /* Should work for all system directories: root, master, jindex, per_node */
+ static int check_system_dir(struct gfs2_inode *sysinode, const char *dirname,
+-		     int builder(struct gfs2_sbd *sbp))
++		     int builder(struct gfs2_sbd *sdp))
+ {
+ 	uint64_t iblock = 0;
+ 	struct dir_status ds = {0};
+@@ -619,12 +619,12 @@ static int check_system_dir(struct gfs2_inode *sysinode, const char *dirname,
+ /**
+  * is_system_dir - determine if a given block is for a system directory.
+  */
+-static inline int is_system_dir(struct gfs2_sbd *sbp, uint64_t block)
++static inline int is_system_dir(struct gfs2_sbd *sdp, uint64_t block)
+ {
+-	if (block == sbp->md.rooti->i_di.di_num.no_addr ||
+-	    block == sbp->md.jiinode->i_di.di_num.no_addr ||
+-	    block == sbp->md.pinode->i_di.di_num.no_addr ||
+-	    block == sbp->master_dir->i_di.di_num.no_addr)
++	if (block == sdp->md.rooti->i_di.di_num.no_addr ||
++	    block == sdp->md.jiinode->i_di.di_num.no_addr ||
++	    block == sdp->md.pinode->i_di.di_num.no_addr ||
++	    block == sdp->master_dir->i_di.di_num.no_addr)
+ 		return TRUE;
+ 	return FALSE;
+ }
+@@ -640,7 +640,7 @@ static inline int is_system_dir(struct gfs2_sbd *sbp, uint64_t block)
+  * directory name length
+  * entries in range
+  */
+-int pass2(struct gfs2_sbd *sbp)
++int pass2(struct gfs2_sbd *sdp)
+ {
+ 	uint64_t dirblk;
+ 	uint8_t q;
+@@ -652,25 +652,25 @@ int pass2(struct gfs2_sbd *sbp)
+ 	int error = 0;
+ 
+ 	/* Check all the system directory inodes. */
+-	if (check_system_dir(sbp->md.jiinode, "jindex", build_jindex)) {
++	if (check_system_dir(sdp->md.jiinode, "jindex", build_jindex)) {
+ 		stack;
+ 		return FSCK_ERROR;
+ 	}
+ 	if (skip_this_pass || fsck_abort) /* if asked to skip the rest */
+ 		return FSCK_OK;
+-	if (check_system_dir(sbp->md.pinode, "per_node", build_per_node)) {
++	if (check_system_dir(sdp->md.pinode, "per_node", build_per_node)) {
+ 		stack;
+ 		return FSCK_ERROR;
+ 	}
+ 	if (skip_this_pass || fsck_abort) /* if asked to skip the rest */
+ 		return FSCK_OK;
+-	if (check_system_dir(sbp->master_dir, "master", build_master)) {
++	if (check_system_dir(sdp->master_dir, "master", build_master)) {
+ 		stack;
+ 		return FSCK_ERROR;
+ 	}
+ 	if (skip_this_pass || fsck_abort) /* if asked to skip the rest */
+ 		return FSCK_OK;
+-	if (check_system_dir(sbp->md.rooti, "root", build_root)) {
++	if (check_system_dir(sdp->md.rooti, "root", build_root)) {
+ 		stack;
+ 		return FSCK_ERROR;
+ 	}
+@@ -684,7 +684,7 @@ int pass2(struct gfs2_sbd *sbp)
+ 			return FSCK_OK;
+ 
+ 		/* Skip the system inodes - they're checked above */
+-		if (is_system_dir(sbp, dirblk))
++		if (is_system_dir(sdp, dirblk))
+ 			continue;
+ 
+ 		q = block_type(dirblk);
+@@ -700,7 +700,7 @@ int pass2(struct gfs2_sbd *sbp)
+ 		if(ds.q == gfs2_bad_block) {
+ 			/* First check that the directory's metatree
+ 			 * is valid */
+-			ip = fsck_load_inode(sbp, dirblk);
++			ip = fsck_load_inode(sdp, dirblk);
+ 			error = check_metatree(ip, &pass2_fxns);
+ 			fsck_inode_put(&ip);
+ 			if (error < 0) {
+@@ -708,7 +708,7 @@ int pass2(struct gfs2_sbd *sbp)
+ 				return error;
+ 			}
+ 		}
+-		error = check_dir(sbp, dirblk, &pass2_fxns);
++		error = check_dir(sdp, dirblk, &pass2_fxns);
+ 		if (skip_this_pass || fsck_abort) /* if asked to skip the rest */
+ 			return FSCK_OK;
+ 		if(error < 0) {
+@@ -724,11 +724,13 @@ int pass2(struct gfs2_sbd *sbp)
+ 				return FSCK_ERROR;
+ 			}
+ 			if(query( _("Remove directory entry for bad"
+-				    " inode %"PRIu64" (0x%" PRIx64 ") in %"PRIu64
+-				    " (0x%" PRIx64 ")? (y/n)"), dirblk,
+-				  dirblk, di->treewalk_parent,
+-				  di->treewalk_parent)) {
+-				error = remove_dentry_from_dir(sbp, di->treewalk_parent,
++				    " inode %llu (0x%llx) in %llu"
++				    " (0x%llx)? (y/n)"),
++				  (unsigned long long)dirblk,
++				  (unsigned long long)dirblk,
++				  (unsigned long long)di->treewalk_parent,
++				  (unsigned long long)di->treewalk_parent)) {
++				error = remove_dentry_from_dir(sdp, di->treewalk_parent,
+ 							       dirblk);
+ 				if(error < 0) {
+ 					stack;
+@@ -752,9 +754,9 @@ int pass2(struct gfs2_sbd *sbp)
+ 			/* Can't use fsck_blockmap_set here because we don't
+ 			   have an inode in memory. */
+ 			gfs2_blockmap_set(bl, dirblk, gfs2_inode_invalid);
+-			check_n_fix_bitmap(sbp, dirblk, gfs2_inode_invalid);
++			check_n_fix_bitmap(sdp, dirblk, gfs2_inode_invalid);
+ 		}
+-		ip = fsck_load_inode(sbp, dirblk);
++		ip = fsck_load_inode(sdp, dirblk);
+ 		if(!ds.dotdir) {
+ 			log_err(_("No '.' entry found for directory inode at "
+ 				  "block %"PRIu64" (0x%" PRIx64 ")\n"),
+diff --git a/gfs2/fsck/pass3.c b/gfs2/fsck/pass3.c
+index e1fe5a5..c2bc0f9 100644
+--- a/gfs2/fsck/pass3.c
++++ b/gfs2/fsck/pass3.c
+@@ -14,7 +14,7 @@
+ #include "metawalk.h"
+ #include "util.h"
+ 
+-static int attach_dotdot_to(struct gfs2_sbd *sbp, uint64_t newdotdot,
++static int attach_dotdot_to(struct gfs2_sbd *sdp, uint64_t newdotdot,
+ 			    uint64_t olddotdot, uint64_t block)
+ {
+ 	char *filename;
+@@ -22,8 +22,8 @@ static int attach_dotdot_to(struct gfs2_sbd *sbp, uint64_t newdotdot,
+ 	struct gfs2_inode *ip, *pip;
+ 	uint64_t cur_blks;
+ 
+-	ip = fsck_load_inode(sbp, block);
+-	pip = fsck_load_inode(sbp, newdotdot);
++	ip = fsck_load_inode(sdp, block);
++	pip = fsck_load_inode(sdp, newdotdot);
+ 	/* FIXME: Need to add some interactive
+ 	 * options here and come up with a
+ 	 * good default for non-interactive */
+@@ -68,7 +68,7 @@ static int attach_dotdot_to(struct gfs2_sbd *sbp, uint64_t newdotdot,
+ 	return 0;
+ }
+ 
+-static struct dir_info *mark_and_return_parent(struct gfs2_sbd *sbp,
++static struct dir_info *mark_and_return_parent(struct gfs2_sbd *sdp,
+ 					       struct dir_info *di)
+ {
+ 	struct dir_info *pdi;
+@@ -102,10 +102,11 @@ static struct dir_info *mark_and_return_parent(struct gfs2_sbd *sbp,
+ 			}
+ 			else {
+ 				log_warn( _("Treewalk parent is correct,"
+-						 " fixing dotdot -> %"PRIu64" (0x%" PRIx64 ")\n"),
+-						 di->treewalk_parent, di->treewalk_parent);
+-				attach_dotdot_to(sbp, di->treewalk_parent,
+-								 di->dotdot_parent, di->dinode);
++					    " fixing dotdot -> %llu (0x%llx)\n"),
++					 (unsigned long long)di->treewalk_parent,
++					 (unsigned long long)di->treewalk_parent);
++				attach_dotdot_to(sdp, di->treewalk_parent,
++						 di->dotdot_parent, di->dinode);
+ 				di->dotdot_parent = di->treewalk_parent;
+ 			}
+ 		} else {
+@@ -117,10 +118,13 @@ static struct dir_info *mark_and_return_parent(struct gfs2_sbd *sbp,
+ 				/* FIXME: add a dinode for this entry instead? */
+ 
+ 				if(query( _("Remove directory entry for bad"
+-					    " inode %"PRIu64" (0x%" PRIx64 ") in %"PRIu64
+-					    " (0x%" PRIx64 ")? (y/n)"), di->dinode, di->dinode,
+-					  di->treewalk_parent, di->treewalk_parent)) {
+-					error = remove_dentry_from_dir(sbp, di->treewalk_parent,
++					    " inode %llu (0x%llx) in %llu"
++					    " (0x%llx)? (y/n)"),
++					(unsigned long long)di->dinode,
++					(unsigned long long)di->dinode,
++					(unsigned long long)di->treewalk_parent,
++					(unsigned long long)di->treewalk_parent)) {
++					error = remove_dentry_from_dir(sdp, di->treewalk_parent,
+ 												   di->dinode);
+ 					if(error < 0) {
+ 						stack;
+@@ -144,7 +148,7 @@ static struct dir_info *mark_and_return_parent(struct gfs2_sbd *sbp,
+ 				log_err( _("Both .. and treewalk parents are "
+ 					   "directories, going with treewalk "
+ 					   "for now...\n"));
+-				attach_dotdot_to(sbp, di->treewalk_parent,
++				attach_dotdot_to(sdp, di->treewalk_parent,
+ 						 di->dotdot_parent,
+ 						 di->dinode);
+ 				di->dotdot_parent = di->treewalk_parent;
+@@ -170,19 +174,19 @@ static struct dir_info *mark_and_return_parent(struct gfs2_sbd *sbp,
+  * handle disconnected directories
+  * handle lost+found directory errors (missing, not a directory, no space)
+  */
+-int pass3(struct gfs2_sbd *sbp)
++int pass3(struct gfs2_sbd *sdp)
+ {
+ 	struct osi_node *tmp, *next = NULL;
+ 	struct dir_info *di, *tdi;
+ 	struct gfs2_inode *ip;
+ 	uint8_t q;
+ 
+-	di = dirtree_find(sbp->md.rooti->i_di.di_num.no_addr);
++	di = dirtree_find(sdp->md.rooti->i_di.di_num.no_addr);
+ 	if (di) {
+ 		log_info( _("Marking root inode connected\n"));
+ 		di->checked = 1;
+ 	}
+-	di = dirtree_find(sbp->master_dir->i_di.di_num.no_addr);
++	di = dirtree_find(sdp->master_dir->i_di.di_num.no_addr);
+ 	if (di) {
+ 		log_info( _("Marking master directory inode connected\n"));
+ 		di->checked = 1;
+@@ -202,7 +206,7 @@ int pass3(struct gfs2_sbd *sbp)
+ 			 * param */
+ 			if (skip_this_pass || fsck_abort) /* if asked to skip the rest */
+ 				return FSCK_OK;
+-			tdi = mark_and_return_parent(sbp, di);
++			tdi = mark_and_return_parent(sdp, di);
+ 
+ 			if (tdi) {
+ 				log_debug( _("Directory at block %" PRIu64
+@@ -227,7 +231,7 @@ int pass3(struct gfs2_sbd *sbp)
+ 					   because we don't have ip */
+ 					gfs2_blockmap_set(bl, di->dinode,
+ 							  gfs2_block_free);
+-					check_n_fix_bitmap(sbp, di->dinode,
++					check_n_fix_bitmap(sdp, di->dinode,
+ 							   gfs2_block_free);
+ 					break;
+ 				} else
+@@ -253,16 +257,16 @@ int pass3(struct gfs2_sbd *sbp)
+ 				   because we don't have ip */
+ 				gfs2_blockmap_set(bl, di->dinode,
+ 						  gfs2_block_free);
+-				check_n_fix_bitmap(sbp, di->dinode,
++				check_n_fix_bitmap(sdp, di->dinode,
+ 						   gfs2_block_free);
+ 				log_err( _("The block was cleared\n"));
+ 				break;
+ 			}
+ 
+-			log_err( _("Found unlinked directory at block %" PRIu64
+-				   " (0x%" PRIx64 ")\n"), di->dinode,
+-				 di->dinode);
+-			ip = fsck_load_inode(sbp, di->dinode);
++			log_err( _("Found unlinked directory at block %llu"
++				   " (0x%llx)\n"), (unsigned long long)di->dinode,
++				 (unsigned long long)di->dinode);
++			ip = fsck_load_inode(sdp, di->dinode);
+ 			/* Don't skip zero size directories with eattrs */
+ 			if(!ip->i_di.di_size && !ip->i_di.di_eattr){
+ 				log_err( _("Unlinked directory has zero "
+diff --git a/gfs2/fsck/pass4.c b/gfs2/fsck/pass4.c
+index 0fd0aac..0e17a05 100644
+--- a/gfs2/fsck/pass4.c
++++ b/gfs2/fsck/pass4.c
+@@ -39,7 +39,7 @@ static int fix_link_count(struct inode_info *ii, struct gfs2_inode *ip)
+ 	return 0;
+ }
+ 
+-static int scan_inode_list(struct gfs2_sbd *sbp) {
++static int scan_inode_list(struct gfs2_sbd *sdp) {
+ 	struct osi_node *tmp, *next = NULL;
+ 	struct inode_info *ii;
+ 	struct gfs2_inode *ip;
+@@ -67,7 +67,7 @@ static int scan_inode_list(struct gfs2_sbd *sbp) {
+ 					(unsigned long long)ii->inode);
+ 				if(query(  _("Delete unlinked inode with bad "
+ 					     "blocks? (y/n) "))) {
+-					ip = fsck_load_inode(sbp, ii->inode);
++					ip = fsck_load_inode(sdp, ii->inode);
+ 					check_inode_eattr(ip,
+ 							  &pass4_fxns_delete);
+ 					check_metatree(ip, &pass4_fxns_delete);
+@@ -91,7 +91,7 @@ static int scan_inode_list(struct gfs2_sbd *sbp) {
+ 					   "not an inode (%d)\n"),
+ 					 (unsigned long long)ii->inode,
+ 					 (unsigned long long)ii->inode, q);
+-				ip = fsck_load_inode(sbp, ii->inode);
++				ip = fsck_load_inode(sdp, ii->inode);
+ 				if(query(_("Delete unlinked inode? (y/n) "))) {
+ 					check_inode_eattr(ip,
+ 							  &pass4_fxns_delete);
+@@ -108,7 +108,7 @@ static int scan_inode_list(struct gfs2_sbd *sbp) {
+ 				}
+ 				continue;
+ 			}
+-			ip = fsck_load_inode(sbp, ii->inode);
++			ip = fsck_load_inode(sdp, ii->inode);
+ 
+ 			/* We don't want to clear zero-size files with
+ 			 * eattrs - there might be relevent info in
+@@ -145,10 +145,11 @@ static int scan_inode_list(struct gfs2_sbd *sbp) {
+ 					ii->inode, ii->link_count, ii->counted_links);
+ 			/* Read in the inode, adjust the link count,
+ 			 * and write it back out */
+-			if(query( _("Update link count for inode %" PRIu64
+-				    " (0x%" PRIx64 ") ? (y/n) "),
+-				  ii->inode, ii->inode)) {
+-				ip = fsck_load_inode(sbp, ii->inode); /* bread, inode_get */
++			if(query( _("Update link count for inode %llu"
++				    " (0x%llx) ? (y/n) "),
++				  (unsigned long long)ii->inode,
++				  (unsigned long long)ii->inode)) {
++				ip = fsck_load_inode(sdp, ii->inode); /* bread, inode_get */
+ 				fix_link_count(ii, ip);
+ 				ii->link_count = ii->counted_links;
+ 				fsck_inode_put(&ip); /* out, brelse, free */
+@@ -186,13 +187,13 @@ static int scan_inode_list(struct gfs2_sbd *sbp) {
+  * handle unreferenced inodes of other types
+  * handle bad blocks
+  */
+-int pass4(struct gfs2_sbd *sbp)
++int pass4(struct gfs2_sbd *sdp)
+ {
+ 	if(lf_dip)
+ 		log_debug( _("At beginning of pass4, lost+found entries is %u\n"),
+ 				  lf_dip->i_di.di_entries);
+ 	log_info( _("Checking inode reference counts.\n"));
+-	if(scan_inode_list(sbp)) {
++	if(scan_inode_list(sdp)) {
+ 		stack;
+ 		return FSCK_ERROR;
+ 	}
+diff --git a/gfs2/fsck/pass5.c b/gfs2/fsck/pass5.c
+index 79493e1..db1870d 100644
+--- a/gfs2/fsck/pass5.c
++++ b/gfs2/fsck/pass5.c
+@@ -48,7 +48,7 @@ static int convert_mark(uint8_t q, uint32_t *count)
+ 	return -1;
+ }
+ 
+-static int check_block_status(struct gfs2_sbd *sbp, char *buffer, unsigned int buflen,
++static int check_block_status(struct gfs2_sbd *sdp, char *buffer, unsigned int buflen,
+ 					   uint64_t *rg_block, uint64_t rg_data, uint32_t *count)
+ {
+ 	unsigned char *byte, *end;
+@@ -84,7 +84,7 @@ static int check_block_status(struct gfs2_sbd *sbp, char *buffer, unsigned int b
+ 				 (unsigned long long)block,
+ 				 (unsigned long long)block);
+ 			if(query(_("Do you want to fix the bitmap? (y/n) "))) {
+-				if(gfs2_set_bitmap(sbp, block, block_status))
++				if(gfs2_set_bitmap(sdp, block, block_status))
+ 					log_err(_("Unlinked block %llu "
+ 						  "(0x%llx) bitmap not fixed."
+ 						  "\n"),
+@@ -112,10 +112,10 @@ static int check_block_status(struct gfs2_sbd *sbp, char *buffer, unsigned int b
+ 			log_err( _("Metadata type is %u (%s)\n"), q,
+ 					block_type_string(q));
+ 
+-			if(query(_("Fix bitmap for block %" PRIu64
+-				   " (0x%" PRIx64 ") ? (y/n) "),
+-				 block, block)) {
+-				if(gfs2_set_bitmap(sbp, block, block_status))
++			if(query(_("Fix bitmap for block %llu (0x%llx) ? (y/n) "),
++				 (unsigned long long)block,
++				 (unsigned long long)block)) {
++				if(gfs2_set_bitmap(sdp, block, block_status))
+ 					log_err( _("Failed.\n"));
+ 				else
+ 					log_err( _("Succeeded.\n"));
+@@ -134,7 +134,7 @@ static int check_block_status(struct gfs2_sbd *sbp, char *buffer, unsigned int b
+ 	return 0;
+ }
+ 
+-static void update_rgrp(struct gfs2_sbd *sbp, struct rgrp_list *rgp,
++static void update_rgrp(struct gfs2_sbd *sdp, struct rgrp_list *rgp,
+ 			uint32_t *count)
+ {
+ 	uint32_t i;
+@@ -146,7 +146,7 @@ static void update_rgrp(struct gfs2_sbd *sbp, struct rgrp_list *rgp,
+ 		bits = &rgp->bits[i];
+ 
+ 		/* update the bitmaps */
+-		check_block_status(sbp, rgp->bh[i]->b_data + bits->bi_offset,
++		check_block_status(sdp, rgp->bh[i]->b_data + bits->bi_offset,
+ 						   bits->bi_len, &rg_block, rgp->ri.ri_data0, count);
+ 		if (skip_this_pass || fsck_abort) /* if asked to skip the rest */
+ 			return;
+@@ -191,7 +191,7 @@ static void update_rgrp(struct gfs2_sbd *sbp, struct rgrp_list *rgp,
+  * fix free block maps
+  * fix used inode maps
+  */
+-int pass5(struct gfs2_sbd *sbp)
++int pass5(struct gfs2_sbd *sdp)
+ {
+ 	osi_list_t *tmp;
+ 	struct rgrp_list *rgp = NULL;
+@@ -199,7 +199,7 @@ int pass5(struct gfs2_sbd *sbp)
+ 	uint64_t rg_count = 0;
+ 
+ 	/* Reconcile RG bitmaps with fsck bitmap */
+-	for(tmp = sbp->rglist.next; tmp != &sbp->rglist; tmp = tmp->next){
++	for(tmp = sdp->rglist.next; tmp != &sdp->rglist; tmp = tmp->next){
+ 		if (skip_this_pass || fsck_abort) /* if asked to skip the rest */
+ 			return FSCK_OK;
+ 		log_info( _("Verifying Resource Group #%" PRIu64 "\n"), rg_count);
+@@ -208,7 +208,7 @@ int pass5(struct gfs2_sbd *sbp)
+ 
+ 		rg_count++;
+ 		/* Compare the bitmaps and report the differences */
+-		update_rgrp(sbp, rgp, count);
++		update_rgrp(sdp, rgp, count);
+ 	}
+ 	/* Fix up superblock info based on this - don't think there's
+ 	 * anything to do here... */

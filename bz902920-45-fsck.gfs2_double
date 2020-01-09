@@ -1,0 +1,315 @@
+commit 3cb08a8cf18e513cae007d987edc39fb3b1ef61f
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Thu Apr 11 13:45:39 2013 -0700
+
+    fsck.gfs2: double-check transitions from dinode to data
+    
+    If a corrupt dinode references a bunch of blocks as data blocks,
+    and those blocks occur later in the bitmap (as is usually the case)
+    but they're really dinodes, we have a problem. Before it finds the
+    corruption, it can change the bitmap markings from 'dinode' to 'data'
+    blocks. Later, when it determines the dinode is corrupt. It tries
+    to "undo" all those data blocks, but since pass1 hasn't processed
+    them yet, it marks them as 'free' in the bitmap, and we've lost the
+    fact that they're dinodes. The result is that the files/dinodes
+    being improperly referenced are deleted by mistake.
+    
+    This patch adds a check for bitmap transitions in pass1 from 'dinode'
+    to 'data', where the block hasn't been checked yet. We don't care about
+    transitions from dinode to free because that's a normal delete of a
+    dinode. We also don't care about transitions between dinode to
+    metadata, because all those checks validate that the metadata type is
+    the correct type of metadata, so we know we're making the right
+    decision. So the only issue are data blocks referencing dinodes.
+    
+    What this patch does is: when the bitmap is making a transition from
+    'dinode' to 'data' in pass1, it basically puts up a red flag.
+    The block is read in and checked to see if it really looks like a
+    dinode. We have to be careful here, because customer data is allowed
+    to look like a dinode. If the block really seems to be a dinode, we
+    DO NOT want to treat it as a data block and assume the duplicate
+    reference handler in pass1b will handle it, because the dinode's
+    metadata blocks will not have been checked in pass1.
+    
+    Instead, we want to flag it as corruption in the referencing file
+    dinode, not change the bitmap or blockmap, and allow pass1 to treat
+    it properly as a dinode when it gets there. The corrupt dinode
+    referencing the dinode as 'data' should be deleted and the work done
+    thusfar should be backed out by the pass1 'undo' functions.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index 15bdf7a..8fc445e 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -25,7 +25,7 @@
+    is used to set the latter.  The two must be kept in sync, otherwise
+    you'll get bitmap mismatches.  This function checks the status of the
+    bitmap whenever the blockmap changes, and fixes it accordingly. */
+-int check_n_fix_bitmap(struct gfs2_sbd *sdp, uint64_t blk,
++int check_n_fix_bitmap(struct gfs2_sbd *sdp, uint64_t blk, int error_on_dinode,
+ 		       enum gfs2_mark_block new_blockmap_state)
+ {
+ 	int old_bitmap_state, new_bitmap_state;
+@@ -47,6 +47,16 @@ int check_n_fix_bitmap(struct gfs2_sbd *sdp, uint64_t blk,
+ 			/* gfs1 descriptions: */
+ 			{"free", "data", "free meta", "metadata", "reserved"}};
+ 
++		if (error_on_dinode && old_bitmap_state == GFS2_BLKST_DINODE &&
++		    new_bitmap_state != GFS2_BLKST_FREE) {
++			log_debug(_("Reference as '%s' to block %llu (0x%llx) "
++				    "which was marked as dinode. Needs "
++				    "further investigation.\n"),
++				  allocdesc[sdp->gfs1][new_bitmap_state],
++				  (unsigned long long)blk,
++				  (unsigned long long)blk);
++			return 1;
++		}
+ 		/* Keep these messages as short as possible, or the output
+ 		   gets to be huge and unmanageable. */
+ 		log_err( _("Block %llu (0x%llx) was '%s', should be %s.\n"),
+@@ -104,6 +114,7 @@ int check_n_fix_bitmap(struct gfs2_sbd *sdp, uint64_t blk,
+  */
+ int _fsck_blockmap_set(struct gfs2_inode *ip, uint64_t bblock,
+ 		       const char *btype, enum gfs2_mark_block mark,
++		       int error_on_dinode,
+ 		       const char *caller, int fline)
+ {
+ 	int error;
+@@ -162,9 +173,11 @@ int _fsck_blockmap_set(struct gfs2_inode *ip, uint64_t bblock,
+ 
+ 	/* First, check the rgrp bitmap against what we think it should be.
+ 	   If that fails, it's an invalid block--part of an rgrp. */
+-	error = check_n_fix_bitmap(ip->i_sbd, bblock, mark);
++	error = check_n_fix_bitmap(ip->i_sbd, bblock, error_on_dinode, mark);
+ 	if (error) {
+-		log_err( _("This block is not represented in the bitmap.\n"));
++		if (error < 0)
++			log_err( _("This block is not represented in the "
++				   "bitmap.\n"));
+ 		return error;
+ 	}
+ 
+@@ -515,7 +528,7 @@ int check_leaf(struct gfs2_inode *ip, int lindex, struct metawalk_fxns *pass,
+ 
+ 	if (pass->check_leaf) {
+ 		error = pass->check_leaf(ip, *leaf_no, pass->private);
+-		if (error) {
++		if (error == -EEXIST) {
+ 			log_info(_("Previous reference to leaf %lld (0x%llx) "
+ 				   "has already checked it; skipping.\n"),
+ 				 (unsigned long long)*leaf_no,
+diff --git a/gfs2/fsck/metawalk.h b/gfs2/fsck/metawalk.h
+index 56f57d9..aacb962 100644
+--- a/gfs2/fsck/metawalk.h
++++ b/gfs2/fsck/metawalk.h
+@@ -45,10 +45,12 @@ extern int delete_eattr_extentry(struct gfs2_inode *ip, uint64_t *ea_data_ptr,
+ 				 void *private);
+ 
+ extern int _fsck_blockmap_set(struct gfs2_inode *ip, uint64_t bblock,
+-		       const char *btype, enum gfs2_mark_block mark,
+-		       const char *caller, int line);
++			      const char *btype, enum gfs2_mark_block mark,
++			      int error_on_dinode,
++			      const char *caller, int line);
+ extern int check_n_fix_bitmap(struct gfs2_sbd *sdp, uint64_t blk,
+-		       enum gfs2_mark_block new_blockmap_state);
++			      int error_on_dinode,
++			      enum gfs2_mark_block new_blockmap_state);
+ extern void reprocess_inode(struct gfs2_inode *ip, const char *desc);
+ extern struct duptree *dupfind(uint64_t block);
+ extern struct gfs2_inode *fsck_system_inode(struct gfs2_sbd *sdp,
+@@ -63,8 +65,10 @@ extern int repair_leaf(struct gfs2_inode *ip, uint64_t *leaf_no, int lindex,
+ 
+ #define is_duplicate(dblock) ((dupfind(dblock)) ? 1 : 0)
+ 
+-#define fsck_blockmap_set(ip, b, bt, m) _fsck_blockmap_set(ip, b, bt, m, \
+-							   __FUNCTION__, __LINE__)
++#define fsck_blockmap_set(ip, b, bt, m) \
++	_fsck_blockmap_set(ip, b, bt, m, 0, __FUNCTION__, __LINE__)
++#define fsck_blkmap_set_noino(ip, b, bt, m) \
++	_fsck_blockmap_set(ip, b, bt, m, 1, __FUNCTION__, __LINE__)
+ 
+ enum meta_check_rc {
+ 	meta_error = -1,
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index 90e3829..fbeca0b 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -149,7 +149,7 @@ static int resuscitate_metalist(struct gfs2_inode *ip, uint64_t block,
+ 	if (fsck_system_inode(ip->i_sbd, block))
+ 		fsck_blockmap_set(ip, block, _("system file"), gfs2_indir_blk);
+ 	else
+-		check_n_fix_bitmap(ip->i_sbd, block, gfs2_indir_blk);
++		check_n_fix_bitmap(ip->i_sbd, block, 0, gfs2_indir_blk);
+ 	bc->indir_count++;
+ 	return meta_is_good;
+ }
+@@ -203,7 +203,7 @@ static int resuscitate_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 	if (fsck_system_inode(sdp, block))
+ 		fsck_blockmap_set(ip, block, _("system file"), dinode_type);
+ 	else
+-		check_n_fix_bitmap(sdp, block, dinode_type);
++		check_n_fix_bitmap(sdp, block, 0, dinode_type);
+ 	/* Return the number of leaf entries so metawalk doesn't flag this
+ 	   leaf as having none. */
+ 	*count = be16_to_cpu(((struct gfs2_leaf *)bh->b_data)->lf_entries);
+@@ -338,6 +338,8 @@ static int undo_reference(struct gfs2_inode *ip, uint64_t block, int meta,
+ 	struct block_count *bc = (struct block_count *)private;
+ 	struct duptree *dt;
+ 	struct inode_with_dups *id;
++	int old_bitmap_state = 0;
++	struct rgrp_tree *rgd;
+ 
+ 	if (!valid_block(ip->i_sbd, block)) { /* blk outside of FS */
+ 		fsck_blockmap_set(ip, ip->i_di.di_num.no_addr,
+@@ -366,6 +368,12 @@ static int undo_reference(struct gfs2_inode *ip, uint64_t block, int meta,
+ 			return 1;
+ 		}
+ 	}
++	if (!meta) {
++		rgd = gfs2_blk2rgrpd(ip->i_sbd, block);
++		old_bitmap_state = gfs2_get_bitmap(ip->i_sbd, block, rgd);
++		if (old_bitmap_state == GFS2_BLKST_DINODE)
++			return -1;
++	}
+ 	fsck_blockmap_set(ip, block,
+ 			  meta ? _("bad indirect") : _("referenced data"),
+ 			  gfs2_block_free);
+@@ -384,6 +392,51 @@ static int undo_check_data(struct gfs2_inode *ip, uint64_t block,
+ 	return undo_reference(ip, block, 0, private);
+ }
+ 
++/* blockmap_set_as_data - set block as 'data' in the blockmap, if not dinode
++ *
++ * This function tries to set a block that's referenced as data as 'data'
++ * in the fsck blockmap. But if that block is marked as 'dinode' in the
++ * rgrp bitmap, it does additional checks to see if it looks like a dinode.
++ * Note that previous checks were done for duplicate references, so this
++ * is checking for dinodes that we haven't processed yet.
++ */
++static int blockmap_set_as_data(struct gfs2_inode *ip, uint64_t block)
++{
++	int error;
++	struct gfs2_buffer_head *bh;
++	struct gfs2_dinode *di;
++
++	error = fsck_blkmap_set_noino(ip, block, _("data"),  gfs2_block_used);
++	if (!error)
++		return 0;
++
++	error = 0;
++	/* The bitmap says it's a dinode, but a block reference begs to differ.
++	   So which is it? */
++	bh = bread(ip->i_sbd, block);
++	if (gfs2_check_meta(bh, GFS2_METATYPE_DI) != 0)
++		goto out;
++
++	/* The meta header agrees it's a dinode. But it might be data in
++	   disguise, so do some extra checks. */
++	di = (struct gfs2_dinode *)bh->b_data;
++	if (be64_to_cpu(di->di_num.no_addr) != block)
++		goto out;
++
++	log_err(_("Inode %lld (0x%llx) has a reference to block %lld (0x%llx) "
++		  "as a data block, but it appears to be a dinode we "
++		  "haven't checked yet.\n"),
++		(unsigned long long)ip->i_di.di_num.no_addr,
++		(unsigned long long)ip->i_di.di_num.no_addr,
++		(unsigned long long)block, (unsigned long long)block);
++	error = -1;
++out:
++	if (!error)
++		fsck_blockmap_set(ip, block, _("data"),  gfs2_block_used);
++	brelse(bh);
++	return error;
++}
++
+ static int check_data(struct gfs2_inode *ip, uint64_t metablock,
+ 		      uint64_t block, void *private)
+ {
+@@ -468,7 +521,7 @@ static int check_data(struct gfs2_inode *ip, uint64_t metablock,
+ 			 (unsigned long long)block, (unsigned long long)block);
+ 		fsck_blockmap_set(ip, block, _("jdata"), gfs2_jdata);
+ 	} else
+-		fsck_blockmap_set(ip, block, _("data"), gfs2_block_used);
++		return blockmap_set_as_data(ip, block);
+ 	return 0;
+ }
+ 
+@@ -1195,7 +1248,7 @@ static int check_system_inode(struct gfs2_sbd *sdp,
+ 				 (unsigned long long)iblock,
+ 				 (unsigned long long)iblock);
+ 			gfs2_blockmap_set(bl, iblock, gfs2_block_free);
+-			check_n_fix_bitmap(sdp, iblock, gfs2_block_free);
++			check_n_fix_bitmap(sdp, iblock, 0, gfs2_block_free);
+ 			inode_put(sysinode);
+ 		}
+ 	}
+@@ -1442,7 +1495,7 @@ int pass1(struct gfs2_sbd *sdp)
+ 			}
+ 			/* rgrps and bitmaps don't have bits to represent
+ 			   their blocks, so don't do this:
+-			check_n_fix_bitmap(sdp, rgd->ri.ri_addr + i,
++			check_n_fix_bitmap(sdp, rgd->ri.ri_addr + i, 0,
+ 			gfs2_meta_rgrp);*/
+ 		}
+ 
+@@ -1556,7 +1609,7 @@ int pass1(struct gfs2_sbd *sdp)
+ 						   "block #%llu (0x%llx)\n"),
+ 						 (unsigned long long)block,
+ 						 (unsigned long long)block);
+-					check_n_fix_bitmap(sdp, block,
++					check_n_fix_bitmap(sdp, block, 0,
+ 							   gfs2_block_free);
+ 				}
+ 			} else if (handle_di(sdp, bh) < 0) {
+diff --git a/gfs2/fsck/pass1b.c b/gfs2/fsck/pass1b.c
+index bf26c2c..224a5d0 100644
+--- a/gfs2/fsck/pass1b.c
++++ b/gfs2/fsck/pass1b.c
+@@ -499,7 +499,7 @@ static int handle_dup_blk(struct gfs2_sbd *sdp, struct duptree *dt)
+ 				dup_delete(dh.dt);
+ 			/* Now fix the block type of the block in question. */
+ 			gfs2_blockmap_set(bl, dup_blk, gfs2_block_free);
+-			check_n_fix_bitmap(sdp, dup_blk, gfs2_block_free);
++			check_n_fix_bitmap(sdp, dup_blk, 0, gfs2_block_free);
+ 		}
+ 	}
+ 	return 0;
+diff --git a/gfs2/fsck/pass2.c b/gfs2/fsck/pass2.c
+index 99481c9..02fa577 100644
+--- a/gfs2/fsck/pass2.c
++++ b/gfs2/fsck/pass2.c
+@@ -1706,7 +1706,7 @@ int pass2(struct gfs2_sbd *sdp)
+ 			/* Can't use fsck_blockmap_set here because we don't
+ 			   have an inode in memory. */
+ 			gfs2_blockmap_set(bl, dirblk, gfs2_inode_invalid);
+-			check_n_fix_bitmap(sdp, dirblk, gfs2_inode_invalid);
++			check_n_fix_bitmap(sdp, dirblk, 0, gfs2_inode_invalid);
+ 		}
+ 		ip = fsck_load_inode(sdp, dirblk);
+ 		if (!ds.dotdir) {
+diff --git a/gfs2/fsck/pass3.c b/gfs2/fsck/pass3.c
+index f5f38c5..6a6305a 100644
+--- a/gfs2/fsck/pass3.c
++++ b/gfs2/fsck/pass3.c
+@@ -273,7 +273,7 @@ int pass3(struct gfs2_sbd *sdp)
+ 					gfs2_blockmap_set(bl, di->dinode.no_addr,
+ 							  gfs2_block_free);
+ 					check_n_fix_bitmap(sdp, di->dinode.no_addr,
+-							   gfs2_block_free);
++							   0, gfs2_block_free);
+ 					break;
+ 				} else
+ 					log_err( _("Unlinked directory with bad block remains\n"));
+@@ -297,7 +297,7 @@ int pass3(struct gfs2_sbd *sdp)
+ 				   because we don't have ip */
+ 				gfs2_blockmap_set(bl, di->dinode.no_addr,
+ 						  gfs2_block_free);
+-				check_n_fix_bitmap(sdp, di->dinode.no_addr,
++				check_n_fix_bitmap(sdp, di->dinode.no_addr, 0,
+ 						   gfs2_block_free);
+ 				log_err( _("The block was cleared\n"));
+ 				break;

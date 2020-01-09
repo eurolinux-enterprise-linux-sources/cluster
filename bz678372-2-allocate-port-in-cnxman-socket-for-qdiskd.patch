@@ -1,0 +1,44 @@
+commit 9d9f4836dd6c62fa1379c6d7f4e82eee265508cf
+Author: Lon Hohberger <lhh@redhat.com>
+Date:   Fri Feb 17 16:36:33 2012 -0500
+
+    cman: Allocate port in cnxman-socket.h for qdiskd
+    
+    Resolves: rhbz#678372
+    
+    Signed-off-by: Lon Hohberger <lhh@redhat.com>
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/cman/daemon/cnxman-socket.h b/cman/daemon/cnxman-socket.h
+index d243b40..e6bb5dd 100644
+--- a/cman/daemon/cnxman-socket.h
++++ b/cman/daemon/cnxman-socket.h
+@@ -68,6 +68,7 @@
+ #define CLUSTER_PORT_SERVICES    2
+ #define CLUSTER_PORT_SYSMAN      10	/* Remote execution daemon */
+ #define CLUSTER_PORT_CLVMD       11	/* Cluster LVM daemon */
++#define CLUSTER_PORT_QDISKD      178	/* Quorum disk daemon */
+ 
+ /* Port numbers above this will be blocked when the cluster is inquorate or in
+  * transition */
+diff --git a/cman/qdisk/main.c b/cman/qdisk/main.c
+index d613d84..fc714f6 100644
+--- a/cman/qdisk/main.c
++++ b/cman/qdisk/main.c
+@@ -25,6 +25,7 @@
+ #include <liblogthread.h>
+ #include "score.h"
+ #include "../daemon/cman.h"
++#include "../daemon/cnxman-socket.h"
+ #include <sys/syslog.h>
+ 
+ #define LOG_DAEMON_NAME  "qdiskd"
+@@ -2041,7 +2042,7 @@ main(int argc, char **argv)
+ 		goto out;
+ 	}
+ 
+-	if (cman_start_recv_data(ch_user, qdisk_whine, 178) != 0) {
++	if (cman_start_recv_data(ch_user, qdisk_whine, CLUSTER_PORT_QDISKD) != 0) {
+ 		logt_print(LOG_CRIT, "Could not register with CMAN: %s\n",
+ 			   strerror(errno));
+ 		goto out;

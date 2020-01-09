@@ -1,0 +1,77 @@
+commit 44ccc7c3c3ec6439bbdae51873c5e180fdb72d10
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Thu Jan 12 14:29:19 2012 -0600
+
+    fsck.gfs2: Don't use strerror for libgfs2 errors
+    
+    This patch removes the calls to strerror from initialize.c.
+    The errors returned by libgfs2 currently don't conform to system
+    errors.  For example, they can return positive or negative numbers.
+    Therefore, strerror could segfault or give nonsense messages.
+    I hate numeric error messages as much as the next guy, but using
+    strerror won't work until we systematically go through libgfs2 and
+    make all the return codes conform to the rules strerror lives by.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/initialize.c b/gfs2/fsck/initialize.c
+index 7171cdd..7b47374 100644
+--- a/gfs2/fsck/initialize.c
++++ b/gfs2/fsck/initialize.c
+@@ -464,8 +464,8 @@ static void lookup_per_node(struct gfs2_sbd *sdp, int allow_rebuild)
+ 
+ 		err = build_per_node(sdp);
+ 		if (err) {
+-			log_crit(_("Error rebuilding per_node directory: %s\n"),
+-				 strerror(err));
++			log_crit(_("Error %d rebuilding per_node directory\n"),
++				 err);
+ 			exit(FSCK_ERROR);
+ 		}
+ 	}
+@@ -577,8 +577,8 @@ static int init_system_inodes(struct gfs2_sbd *sdp)
+ 			}
+ 			err = build_inum(sdp);
+ 			if (err) {
+-				log_crit(_("Error rebuilding inum inode: %s\n"),
+-					 strerror(err));
++				log_crit(_("Error %d rebuilding inum inode\n"),
++					 err);
+ 				exit(FSCK_ERROR);
+ 			}
+ 			gfs2_lookupi(sdp->master_dir, "inum", 4,
+@@ -609,8 +609,7 @@ static int init_system_inodes(struct gfs2_sbd *sdp)
+ 		}
+ 		err = build_statfs(sdp);
+ 		if (err) {
+-			log_crit(_("Error rebuilding statfs inode: %s\n"),
+-				 strerror(err));
++			log_crit(_("Error %d rebuilding statfs inode\n"), err);
+ 			exit(FSCK_ERROR);
+ 		}
+ 		gfs2_lookupi(sdp->master_dir, "statfs", 6, &sdp->md.statfs);
+@@ -646,8 +645,7 @@ static int init_system_inodes(struct gfs2_sbd *sdp)
+ 		}
+ 		err = build_quota(sdp);
+ 		if (err) {
+-			log_crit(_("Error rebuilding quota inode: %s\n"),
+-				 strerror(err));
++			log_crit(_("Error %d rebuilding quota inode\n"), err);
+ 			exit(FSCK_ERROR);
+ 		}
+ 		gfs2_lookupi(sdp->master_dir, "quota", 5, &sdp->md.qinode);
+diff --git a/gfs2/fsck/lost_n_found.c b/gfs2/fsck/lost_n_found.c
+index d109283..70a9181 100644
+--- a/gfs2/fsck/lost_n_found.c
++++ b/gfs2/fsck/lost_n_found.c
+@@ -153,8 +153,8 @@ int add_inode_to_lf(struct gfs2_inode *ip){
+ 			lf_dip = createi(sdp->md.rooti, "lost+found",
+ 					 S_IFDIR | 0700, 0);
+ 		if (lf_dip == NULL) {
+-			log_crit(_("Error creating lost+found: %s\n"),
+-			         strerror(errno));
++			log_crit(_("Error %d creating lost+found: %s\n"),
++				 errno);
+ 			exit(FSCK_ERROR);
+ 		}
+ 

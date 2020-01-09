@@ -1,0 +1,51 @@
+commit f50e499e44e5c7f1920e93c9b26b61c8c8468d48
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Mon Dec 17 09:05:30 2012 -0600
+
+    gfs2_grow: report bad return codes on error
+    
+    This patch changes gfs2_grow so that if errors are encountered
+    during the gfs2_grow process, the return code for the command
+    will more accurately reflect the error. It will no longer report
+    a good return code if an error occurred.
+    
+    rhbz#886585
+
+diff --git a/gfs2/mkfs/main_grow.c b/gfs2/mkfs/main_grow.c
+index 06d8cba..8839953 100644
+--- a/gfs2/mkfs/main_grow.c
++++ b/gfs2/mkfs/main_grow.c
+@@ -294,6 +294,7 @@ main_grow(int argc, char *argv[])
+ 	struct gfs2_sbd sbd, *sdp = &sbd;
+ 	int rgcount, rindex_fd;
+ 	char rindex_name[PATH_MAX];
++	int error = EXIT_SUCCESS;
+ 
+ 	memset(sdp, 0, sizeof(struct gfs2_sbd));
+ 	sdp->bsize = GFS2_DEFAULT_BSIZE;
+@@ -375,6 +376,7 @@ main_grow(int argc, char *argv[])
+ 		fssize = filesystem_size(sdp);
+ 		if (!sdp->rgtree.osi_node) {
+ 			log_err(_("Error: No resource groups found.\n"));
++			error = -EXIT_FAILURE;
+ 			goto out;
+ 		}
+ 		last_rgrp = (struct rgrp_tree *)osi_last(&sdp->rgtree);
+@@ -388,8 +390,9 @@ main_grow(int argc, char *argv[])
+ 				fsgrowth / MB);
+ 			log_err( _("One RG is %uMB for this file system.\n"),
+ 				(rgsize * sdp->bsize) / MB);
+-		}
+-		else {
++			error = -EXIT_FAILURE;
++			goto out;
++		} else {
+ 			int old_rg_count;
+ 
+ 			compute_rgrp_layout(sdp, &sdp->rgtree, TRUE);
+@@ -407,4 +410,5 @@ main_grow(int argc, char *argv[])
+ 	close(sdp->path_fd);
+ 	sync();
+ 	log_notice( _("gfs2_grow complete.\n"));
++	exit(error);
+ }

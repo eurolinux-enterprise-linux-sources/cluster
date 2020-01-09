@@ -1,0 +1,1149 @@
+commit 44547c338ae73be3c724629c97802e4ea2e942b1
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Wed Sep 26 12:21:21 2012 -0500
+
+    fsck.gfs2: Check for formal inode number mismatch
+    
+    This patch checks for directory entries that disagree with the
+    dinode regarding the formal inode number. Directory entries found
+    in this state are removed.
+    
+    rhbz#860048
+
+diff --git a/gfs2/fsck/fsck.h b/gfs2/fsck/fsck.h
+index edd73d7..e4f84c1 100644
+--- a/gfs2/fsck/fsck.h
++++ b/gfs2/fsck/fsck.h
+@@ -28,7 +28,7 @@
+ struct inode_info
+ {
+         struct osi_node node;
+-        uint64_t   inode;
++        struct gfs2_inum di_num;
+         uint32_t   di_nlink;    /* the number of links the inode
+ 				 * thinks it has */
+         uint32_t   counted_links; /* the number of links we've found */
+@@ -37,9 +37,9 @@ struct inode_info
+ struct dir_info
+ {
+         struct osi_node node;
+-        uint64_t dinode;
++        struct gfs2_inum dinode;
+         uint64_t treewalk_parent;
+-        uint64_t dotdot_parent;
++        struct gfs2_inum dotdot_parent;
+         uint8_t  checked:1;
+ 
+ };
+@@ -122,7 +122,7 @@ extern void dirtree_delete(struct dir_info *b);
+ 
+ /* FIXME: Hack to get this going for pass2 - this should be pulled out
+  * of pass1 and put somewhere else... */
+-struct dir_info *dirtree_insert(uint64_t dblock);
++struct dir_info *dirtree_insert(struct gfs2_inum inum);
+ 
+ extern struct gfs2_options opts;
+ extern struct gfs2_inode *lf_dip; /* Lost and found directory inode */
+diff --git a/gfs2/fsck/inode_hash.c b/gfs2/fsck/inode_hash.c
+index 2ba1d05..ac88057 100644
+--- a/gfs2/fsck/inode_hash.c
++++ b/gfs2/fsck/inode_hash.c
+@@ -16,9 +16,9 @@ struct inode_info *inodetree_find(uint64_t block)
+ 	while (node) {
+ 		struct inode_info *data = (struct inode_info *)node;
+ 
+-		if (block < data->inode)
++		if (block < data->di_num.no_addr)
+ 			node = node->osi_left;
+-		else if (block > data->inode)
++		else if (block > data->di_num.no_addr)
+ 			node = node->osi_right;
+ 		else
+ 			return data;
+@@ -26,7 +26,7 @@ struct inode_info *inodetree_find(uint64_t block)
+ 	return NULL;
+ }
+ 
+-struct inode_info *inodetree_insert(uint64_t dblock)
++struct inode_info *inodetree_insert(struct gfs2_inum di_num)
+ {
+ 	struct osi_node **newn = &inodetree.osi_node, *parent = NULL;
+ 	struct inode_info *data;
+@@ -36,9 +36,9 @@ struct inode_info *inodetree_insert(uint64_t dblock)
+ 		struct inode_info *cur = (struct inode_info *)*newn;
+ 
+ 		parent = *newn;
+-		if (dblock < cur->inode)
++		if (di_num.no_addr < cur->di_num.no_addr)
+ 			newn = &((*newn)->osi_left);
+-		else if (dblock > cur->inode)
++		else if (di_num.no_addr > cur->di_num.no_addr)
+ 			newn = &((*newn)->osi_right);
+ 		else
+ 			return cur;
+@@ -54,7 +54,8 @@ struct inode_info *inodetree_insert(uint64_t dblock)
+ 		return NULL;
+ 	}
+ 	/* Add new node and rebalance tree. */
+-	data->inode = dblock;
++	data->di_num.no_addr = di_num.no_addr;
++	data->di_num.no_formal_ino = di_num.no_formal_ino;
+ 	osi_link_node(&data->node, parent, newn);
+ 	osi_insert_color(&data->node, &inodetree);
+ 
+diff --git a/gfs2/fsck/inode_hash.h b/gfs2/fsck/inode_hash.h
+index e18022d..ba18ab2 100644
+--- a/gfs2/fsck/inode_hash.h
++++ b/gfs2/fsck/inode_hash.h
+@@ -4,7 +4,7 @@
+ struct inode_info;
+ 
+ extern struct inode_info *inodetree_find(uint64_t block);
+-extern struct inode_info *inodetree_insert(uint64_t dblock);
++extern struct inode_info *inodetree_insert(struct gfs2_inum di_num);
+ extern void inodetree_delete(struct inode_info *b);
+ 
+ #endif /* _INODE_HASH_H */
+diff --git a/gfs2/fsck/link.c b/gfs2/fsck/link.c
+index 47365d8..c2b1a95 100644
+--- a/gfs2/fsck/link.c
++++ b/gfs2/fsck/link.c
+@@ -14,14 +14,13 @@
+ int set_di_nlink(struct gfs2_inode *ip)
+ {
+ 	struct inode_info *ii;
+-	uint64_t inode_no = ip->i_di.di_num.no_addr;
+ 
+ 	/*log_debug( _("Setting link count to %u for %" PRIu64
+ 	  " (0x%" PRIx64 ")\n"), count, inode_no, inode_no);*/
+ 	/* If the list has entries, look for one that matches inode_no */
+-	ii = inodetree_find(inode_no);
++	ii = inodetree_find(ip->i_di.di_num.no_addr);
+ 	if (!ii)
+-		ii = inodetree_insert(inode_no);
++		ii = inodetree_insert(ip->i_di.di_num);
+ 	if (ii)
+ 		ii->di_nlink = ip->i_di.di_nlink;
+ 	else
+@@ -29,29 +28,33 @@ int set_di_nlink(struct gfs2_inode *ip)
+ 	return 0;
+ }
+ 
+-int incr_link_count(uint64_t inode_no, uint64_t referenced_from,
++int incr_link_count(struct gfs2_inum no, struct gfs2_inode *ip,
+ 		    const char *why)
+ {
+ 	struct inode_info *ii = NULL;
++	uint64_t referenced_from = ip ? ip->i_di.di_num.no_addr : 0;
+ 
+-	ii = inodetree_find(inode_no);
++	ii = inodetree_find(no.no_addr);
+ 	/* If the list has entries, look for one that matches inode_no */
+ 	if (ii) {
++		if (ii->di_num.no_formal_ino != no.no_formal_ino)
++			return 1;
++
+ 		ii->counted_links++;
+ 		log_debug( _("Dir (0x%llx) incremented counted "
+ 			     "links to %u for (0x%llx) via %s\n"),
+ 			   (unsigned long long)referenced_from,
+-			   ii->counted_links, (unsigned long long)inode_no,
++			   ii->counted_links, (unsigned long long)no.no_addr,
+ 			   why);
+ 		return 0;
+ 	}
+ 	log_debug( _("Ref: (0x%llx) No match found when incrementing "
+ 		     "link for (0x%llx)!\n"),
+ 		   (unsigned long long)referenced_from,
+-		   (unsigned long long)inode_no);
++		   (unsigned long long)no.no_addr);
+ 	/* If no match was found, add a new entry and set its
+ 	 * counted links to 1 */
+-	ii = inodetree_insert(inode_no);
++	ii = inodetree_insert(no);
+ 	if (ii)
+ 		ii->counted_links = 1;
+ 	else
+diff --git a/gfs2/fsck/link.h b/gfs2/fsck/link.h
+index ad040e6..842afb9 100644
+--- a/gfs2/fsck/link.h
++++ b/gfs2/fsck/link.h
+@@ -2,7 +2,7 @@
+ #define _LINK_H
+ 
+ int set_di_nlink(struct gfs2_inode *ip);
+-int incr_link_count(uint64_t inode_no, uint64_t referenced_from,
++int incr_link_count(struct gfs2_inum no, struct gfs2_inode *ip,
+ 		    const char *why);
+ int decr_link_count(uint64_t inode_no, uint64_t referenced_from,
+ 		    const char *why);
+diff --git a/gfs2/fsck/lost_n_found.c b/gfs2/fsck/lost_n_found.c
+index d0e036a..06ee485 100644
+--- a/gfs2/fsck/lost_n_found.c
++++ b/gfs2/fsck/lost_n_found.c
+@@ -29,18 +29,19 @@ static void add_dotdot(struct gfs2_inode *ip)
+ 	/* If there's a pre-existing .. directory entry, we have to
+ 	   back out the links. */
+ 	di = dirtree_find(ip->i_di.di_num.no_addr);
+-	if (di && valid_block(sdp, di->dotdot_parent)) {
++	if (di && valid_block(sdp, di->dotdot_parent.no_addr)) {
+ 		struct gfs2_inode *dip;
+ 
+ 		log_debug(_("Directory %lld (0x%llx) already had a "
+ 			    "\"..\" link to %lld (0x%llx).\n"),
+ 			  (unsigned long long)ip->i_di.di_num.no_addr,
+ 			  (unsigned long long)ip->i_di.di_num.no_addr,
+-			  (unsigned long long)di->dotdot_parent,
+-			  (unsigned long long)di->dotdot_parent);
+-		decr_link_count(di->dotdot_parent, ip->i_di.di_num.no_addr,
++			  (unsigned long long)di->dotdot_parent.no_addr,
++			  (unsigned long long)di->dotdot_parent.no_addr);
++		decr_link_count(di->dotdot_parent.no_addr,
++				ip->i_di.di_num.no_addr,
+ 				_(".. unlinked, moving to lost+found"));
+-		dip = fsck_load_inode(sdp, di->dotdot_parent);
++		dip = fsck_load_inode(sdp, di->dotdot_parent.no_addr);
+ 		if (dip->i_di.di_nlink > 0) {
+ 			dip->i_di.di_nlink--;
+ 			set_di_nlink(dip); /* keep inode tree in sync */
+@@ -65,7 +66,7 @@ static void add_dotdot(struct gfs2_inode *ip)
+ 				    "'..' = 0x%llx\n"),
+ 				  (unsigned long long)ip->i_di.di_num.no_addr,
+ 				  (unsigned long long)ip->i_di.di_num.no_addr,
+-				  (unsigned long long)di->dotdot_parent);
++				  (unsigned long long)di->dotdot_parent.no_addr);
+ 		else
+ 			log_debug(_("Couldn't find directory %lld (0x%llx) "
+ 				    "in directory tree.\n"),
+@@ -184,14 +185,13 @@ int add_inode_to_lf(struct gfs2_inode *ip){
+ 					  _("lost+found dinode"),
+ 					  gfs2_inode_dir);
+ 			/* root inode links to lost+found */
+-			incr_link_count(sdp->md.rooti->i_di.di_num.no_addr,
+-				       lf_dip->i_di.di_num.no_addr, _("root"));
++			incr_link_count(sdp->md.rooti->i_di.di_num,
++				       lf_dip, _("root"));
+ 			/* lost+found link for '.' from itself */
+-			incr_link_count(lf_dip->i_di.di_num.no_addr,
+-					lf_dip->i_di.di_num.no_addr, "\".\"");
++			incr_link_count(lf_dip->i_di.di_num,
++					lf_dip, "\".\"");
+ 			/* lost+found link for '..' back to root */
+-			incr_link_count(lf_dip->i_di.di_num.no_addr,
+-					sdp->md.rooti->i_di.di_num.no_addr,
++			incr_link_count(lf_dip->i_di.di_num, sdp->md.rooti,
+ 				       "\"..\"");
+ 			if (sdp->gfs1)
+ 				lf_dip->i_di.__pad1 = GFS_FILE_DIR;
+@@ -274,12 +274,10 @@ int add_inode_to_lf(struct gfs2_inode *ip){
+ 		reprocess_inode(lf_dip, "lost+found");
+ 
+ 	/* This inode is linked from lost+found */
+-	incr_link_count(ip->i_di.di_num.no_addr, lf_dip->i_di.di_num.no_addr,
+-			_("from lost+found"));
++	incr_link_count(ip->i_di.di_num, lf_dip, _("from lost+found"));
+ 	/* If it's a directory, lost+found is back-linked to it via .. */
+ 	if (mode == S_IFDIR)
+-		incr_link_count(lf_dip->i_di.di_num.no_addr,
+-				ip->i_di.di_num.no_addr, _("to lost+found"));
++		incr_link_count(lf_dip->i_di.di_num, ip, _("to lost+found"));
+ 
+ 	log_notice( _("Added inode #%llu (0x%llx) to lost+found\n"),
+ 		    (unsigned long long)ip->i_di.di_num.no_addr,
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index 52d4082..d1209e6 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -1360,7 +1360,7 @@ static int check_system_inode(struct gfs2_sbd *sdp,
+ 					  filename, mark);
+ 			ds.q = mark;
+ 			if (mark == gfs2_inode_dir)
+-				dirtree_insert((*sysinode)->i_di.di_num.no_addr);
++				dirtree_insert((*sysinode)->i_di.di_num);
+ 		}
+ 	} else
+ 		log_info( _("System inode for '%s' is corrupt or missing.\n"),
+@@ -1387,7 +1387,7 @@ static int check_system_inode(struct gfs2_sbd *sdp,
+ 					  filename, mark);
+ 			ds.q = mark;
+ 			if (mark == gfs2_inode_dir)
+-				dirtree_insert((*sysinode)->i_di.di_num.no_addr);
++				dirtree_insert((*sysinode)->i_di.di_num);
+ 		} else {
+ 			log_err( _("Cannot continue without valid %s inode\n"),
+ 				filename);
+@@ -1501,13 +1501,13 @@ static int check_system_inodes(struct gfs2_sbd *sdp)
+ 		/* gfs1 has four dinodes that are set in the superblock and
+ 		   therefore not linked to anything else. We need to adjust
+ 		   the link counts so pass4 doesn't get confused. */
+-		incr_link_count(sdp->md.statfs->i_di.di_num.no_addr, 0,
++		incr_link_count(sdp->md.statfs->i_di.di_num, NULL,
+ 				_("gfs1 statfs inode"));
+-		incr_link_count(sdp->md.jiinode->i_di.di_num.no_addr, 0,
++		incr_link_count(sdp->md.jiinode->i_di.di_num, NULL,
+ 				_("gfs1 jindex inode"));
+-		incr_link_count(sdp->md.riinode->i_di.di_num.no_addr, 0,
++		incr_link_count(sdp->md.riinode->i_di.di_num, NULL,
+ 				_("gfs1 rindex inode"));
+-		incr_link_count(sdp->md.qinode->i_di.di_num.no_addr, 0,
++		incr_link_count(sdp->md.qinode->i_di.di_num, NULL,
+ 				_("gfs1 quota inode"));
+ 		return 0;
+ 	}
+diff --git a/gfs2/fsck/pass1b.c b/gfs2/fsck/pass1b.c
+index 39c3289..e519c20 100644
+--- a/gfs2/fsck/pass1b.c
++++ b/gfs2/fsck/pass1b.c
+@@ -526,12 +526,12 @@ static int resolve_dup_references(struct gfs2_sbd *sdp, struct duptree *b,
+ 		check_inode_eattr(ip, &clear_dup_fxns);
+ 		/* If the dup was in data or metadata, clear the dinode */
+ 		if (id->reftypecount[ref_as_data] ||
+-		    id->reftypecount[ref_as_meta])
++		    id->reftypecount[ref_as_meta]) {
+ 			check_metatree(ip, &clear_dup_fxns);
+-
+-		fsck_blockmap_set(ip, ip->i_di.di_num.no_addr,
+-				  _("duplicate referencing bad"),
+-				  gfs2_inode_invalid);
++			fsck_blockmap_set(ip, ip->i_di.di_num.no_addr,
++					  _("duplicate referencing bad"),
++					  gfs2_inode_invalid);
++		}
+ 		fsck_inode_put(&ip); /* out, brelse, free */
+ 		(dh->ref_inode_count)--;
+ 		/* FIXME: other option should be to duplicate the
+diff --git a/gfs2/fsck/pass2.c b/gfs2/fsck/pass2.c
+index c772be3..0c1c2f5 100644
+--- a/gfs2/fsck/pass2.c
++++ b/gfs2/fsck/pass2.c
+@@ -13,43 +13,46 @@
+ #include "eattr.h"
+ #include "metawalk.h"
+ #include "link.h"
++#include "inode_hash.h"
+ 
+ #define MAX_FILENAME 256
+ 
+ /* Set children's parent inode in dir_info structure - ext2 does not set
+  * dotdot inode here, but instead in pass3 - should we? */
+-static int set_parent_dir(struct gfs2_sbd *sdp, uint64_t childblock,
+-			  uint64_t parentblock)
++static int set_parent_dir(struct gfs2_sbd *sdp, struct gfs2_inum child,
++			  struct gfs2_inum parent)
+ {
+ 	struct dir_info *di;
+ 
+-	di = dirtree_find(childblock);
++	di = dirtree_find(child.no_addr);
+ 	if (!di) {
+ 		log_err( _("Unable to find block %llu (0x%llx"
+ 			   ") in dir_info list\n"),
+-			(unsigned long long)childblock,
+-			(unsigned long long)childblock);
++			(unsigned long long)child.no_addr,
++			(unsigned long long)child.no_addr);
+ 		return -1;
+ 	}
+ 
+-	if (di->dinode == childblock) {
++	if (di->dinode.no_addr == child.no_addr &&
++	    di->dinode.no_formal_ino == child.no_formal_ino) {
+ 		if (di->treewalk_parent) {
+-			log_err( _("Another directory at block %" PRIu64
+-				   " (0x%" PRIx64 ") already contains this "
+-				   "child %lld (%llx) - checking parent %"
+-				   PRIu64 " (0x%" PRIx64 ")\n"),
+-				 di->treewalk_parent, di->treewalk_parent,
+-				 (unsigned long long)childblock,
+-				 (unsigned long long)childblock,
+-				 parentblock, parentblock);
++			log_err( _("Another directory at block %llx (0x%llx) "
++				   "already contains this child %lld (%llx) - "
++				   "checking parent %llx (0x%llx)\n"),
++				 (unsigned long long)di->treewalk_parent,
++				 (unsigned long long)di->treewalk_parent,
++				 (unsigned long long)child.no_addr,
++				 (unsigned long long)child.no_addr,
++				 (unsigned long long)parent.no_addr,
++				 (unsigned long long)parent.no_addr);
+ 			return 1;
+ 		}
+ 		log_debug( _("Child %lld (0x%llx) has parent %lld (0x%llx)\n"),
+-			   (unsigned long long)childblock,
+-			   (unsigned long long)childblock,
+-			   (unsigned long long)parentblock,
+-			   (unsigned long long)parentblock);
+-		di->treewalk_parent = parentblock;
++			   (unsigned long long)child.no_addr,
++			   (unsigned long long)child.no_addr,
++			   (unsigned long long)parent.no_addr,
++			   (unsigned long long)parent.no_addr);
++		di->treewalk_parent = parent.no_addr;
+ 	}
+ 
+ 	return 0;
+@@ -57,7 +60,7 @@ static int set_parent_dir(struct gfs2_sbd *sdp, uint64_t childblock,
+ 
+ /* Set's the child's '..' directory inode number in dir_info structure */
+ static int set_dotdot_dir(struct gfs2_sbd *sdp, uint64_t childblock,
+-			  uint64_t parentblock)
++			  struct gfs2_inum parent)
+ {
+ 	struct dir_info *di;
+ 
+@@ -67,29 +70,30 @@ static int set_dotdot_dir(struct gfs2_sbd *sdp, uint64_t childblock,
+ 			   ") in dir_info tree\n"), childblock, childblock);
+ 		return -1;
+ 	}
+-	if (di->dinode != childblock) {
++	if (di->dinode.no_addr != childblock) {
+ 		log_debug("'..' doesn't point to what we found: childblock "
+ 			  "(0x%llx) != dinode (0x%llx)\n",
+ 			  (unsigned long long)childblock,
+-			  (unsigned long long)di->dinode);
++			  (unsigned long long)di->dinode.no_addr);
+ 		return -1;
+ 	}
+ 	/* Special case for root inode because we set it earlier */
+-	if (di->dotdot_parent &&
+-	    sdp->md.rooti->i_di.di_num.no_addr != di->dinode) {
++	if (di->dotdot_parent.no_addr &&
++	    sdp->md.rooti->i_di.di_num.no_addr != di->dinode.no_addr) {
+ 		/* This should never happen */
+ 		log_crit( _("Dotdot parent already set for block %llu (0x%llx)"
+ 			    "-> %llu (0x%llx)\n"),
+ 			  (unsigned long long)childblock,
+ 			  (unsigned long long)childblock,
+-			  (unsigned long long)di->dotdot_parent,
+-			  (unsigned long long)di->dotdot_parent);
++			  (unsigned long long)di->dotdot_parent.no_addr,
++			  (unsigned long long)di->dotdot_parent.no_addr);
+ 		return -1;
+ 	}
+ 	log_debug("Setting '..' for directory block (0x%llx) to parent "
+ 		  "(0x%llx)\n", (unsigned long long)childblock,
+-		  (unsigned long long)parentblock);
+-	di->dotdot_parent = parentblock;
++		  (unsigned long long)parent.no_addr);
++	di->dotdot_parent.no_addr = parent.no_addr;
++	di->dotdot_parent.no_formal_ino = parent.no_formal_ino;
+ 	return 0;
+ }
+ 
+@@ -219,6 +223,69 @@ struct metawalk_fxns pass2_fxns_delete = {
+ 	.check_eattr_extentry = delete_eattr_extentry,
+ };
+ 
++/* bad_formal_ino - handle mismatches in formal inode number
++ * Returns: 0 if the dirent was repaired
++ *          1 if the caller should delete the dirent
++ */
++static int bad_formal_ino(struct gfs2_inode *ip, struct gfs2_dirent *dent,
++			  struct gfs2_inum entry, const char *tmp_name,
++			  uint8_t q, struct gfs2_dirent *de,
++			  struct gfs2_buffer_head *bh)
++{
++	struct inode_info *ii;
++	struct gfs2_inode *child_ip;
++	struct gfs2_inum childs_dotdot;
++	struct gfs2_sbd *sdp = ip->i_sbd;
++	int error;
++
++	ii = inodetree_find(entry.no_addr);
++	log_err( _("Directory entry '%s' pointing to block %llu (0x%llx) in "
++		   "directory %llu (0x%llx) has the wrong 'formal' inode "
++		   "number.\n"), tmp_name, (unsigned long long)entry.no_addr,
++		 (unsigned long long)entry.no_addr,
++		 (unsigned long long)ip->i_di.di_num.no_addr,
++		 (unsigned long long)ip->i_di.di_num.no_addr);
++	log_err( _("The directory entry has %llu (0x%llx) but the inode has "
++		   "%llu (0x%llx)\n"), (unsigned long long)entry.no_formal_ino,
++		 (unsigned long long)entry.no_formal_ino,
++		 (unsigned long long)ii->di_num.no_formal_ino,
++		 (unsigned long long)ii->di_num.no_formal_ino);
++	if (q != gfs2_inode_dir) {
++		if (query( _("Remove the corrupt directory entry? (y/n) ")))
++			return 1;
++		log_err( _("Corrupt directory entry not removed.\n"));
++		return 0;
++	}
++	/* We have a directory pointing to another directory, but the
++	   formal inode number still doesn't match. If that directory
++	   has a '..' pointing back, just fix up the no_formal_ino. */
++	child_ip = inode_read(sdp, entry.no_addr);
++	error = dir_search(child_ip, "..", 2, NULL, &childs_dotdot);
++	if (!error && childs_dotdot.no_addr == ip->i_di.di_num.no_addr) {
++		log_err( _("The entry points to another directory with intact "
++			   "linkage.\n"));
++		if (query( _("Fix the bad directory entry? (y/n) "))) {
++			log_err( _("Fixing the corrupt directory entry.\n"));
++			entry.no_formal_ino = ii->di_num.no_formal_ino;
++			de->de_inum.no_formal_ino = entry.no_formal_ino;
++			gfs2_dirent_out(de, (char *)dent);
++			bmodified(bh);
++			incr_link_count(entry, ip, _("fixed reference"));
++			set_parent_dir(sdp, entry, ip->i_di.di_num);
++		} else {
++			log_err( _("Directory entry not fixed.\n"));
++		}
++	} else {
++		if (query( _("Remove the corrupt directory entry? (y/n) "))) {
++			inode_put(&child_ip);
++			return 1;
++		}
++		log_err( _("Corrupt directory entry not removed.\n"));
++	}
++	inode_put(&child_ip);
++	return 0;
++}
++
+ /* FIXME: should maybe refactor this a bit - but need to deal with
+  * FIXMEs internally first */
+ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+@@ -227,9 +294,9 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 		 uint32_t *count, void *priv)
+ {
+ 	struct gfs2_sbd *sdp = ip->i_sbd;
+-	uint8_t q;
++	uint8_t q = 0;
+ 	char tmp_name[MAX_FILENAME];
+-	uint64_t entryblock;
++	struct gfs2_inum entry;
+ 	struct dir_status *ds = (struct dir_status *) priv;
+ 	int error;
+ 	struct gfs2_inode *entry_ip = NULL;
+@@ -246,7 +313,8 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 	clear_eattrs.check_eattr_entry = clear_eattr_entry;
+ 	clear_eattrs.check_eattr_extentry = clear_eattr_extentry;
+ 
+-	entryblock = de->de_inum.no_addr;
++	entry.no_addr = de->de_inum.no_addr;
++	entry.no_formal_ino = de->de_inum.no_formal_ino;
+ 
+ 	/* Start of checks */
+ 	memset(tmp_name, 0, MAX_FILENAME);
+@@ -255,7 +323,7 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 	else
+ 		strncpy(tmp_name, filename, MAX_FILENAME - 1);
+ 
+-	if (!valid_block(ip->i_sbd, entryblock)) {
++	if (!valid_block(ip->i_sbd, entry.no_addr)) {
+ 		log_err( _("Block # referenced by directory entry %s in inode "
+ 			   "%lld (0x%llx) is invalid\n"),
+ 			 tmp_name, (unsigned long long)ip->i_di.di_num.no_addr,
+@@ -268,7 +336,7 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 			(*count)++;
+ 			ds->entry_count++;
+ 			/* can't do this because the block is out of range:
+-			   incr_link_count(entryblock); */
++			   incr_link_count(entry); */
+ 			return 0;
+ 		}
+ 	}
+@@ -310,7 +378,7 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 			 tmp_name);
+ 	}
+ 
+-	q = block_type(entryblock);
++	q = block_type(entry.no_addr);
+ 	/* Get the status of the directory inode */
+ 	/**
+ 	 * 1. Blocks marked "invalid" were invalidated due to duplicate
+@@ -330,8 +398,8 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 		/* Handle bad blocks */
+ 		log_err( _("Found directory entry '%s' pointing to invalid "
+ 			   "block %lld (0x%llx)\n"), tmp_name,
+-			 (unsigned long long)entryblock,
+-			 (unsigned long long)entryblock);
++			 (unsigned long long)entry.no_addr,
++			 (unsigned long long)entry.no_addr);
+ 
+ 		if (!query( _("Delete inode containing bad blocks? (y/n)"))) {
+ 			log_warn( _("Entry to inode containing bad blocks remains\n"));
+@@ -339,10 +407,10 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 		}
+ 
+ 		if (q == gfs2_bad_block) {
+-			if (ip->i_di.di_num.no_addr == entryblock)
++			if (ip->i_di.di_num.no_addr == entry.no_addr)
+ 				entry_ip = ip;
+ 			else
+-				entry_ip = fsck_load_inode(sdp, entryblock);
++				entry_ip = fsck_load_inode(sdp, entry.no_addr);
+ 			if (ip->i_di.di_eattr) {
+ 				check_inode_eattr(entry_ip,
+ 						  &pass2_fxns_delete);
+@@ -351,19 +419,19 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 			if (entry_ip != ip)
+ 				fsck_inode_put(&entry_ip);
+ 		}
+-		fsck_blockmap_set(ip, entryblock,
++		fsck_blockmap_set(ip, entry.no_addr,
+ 				  _("bad directory entry"), gfs2_block_free);
+ 		log_err( _("Inode %lld (0x%llx) was deleted.\n"),
+-			 (unsigned long long)entryblock,
+-			 (unsigned long long)entryblock);
++			 (unsigned long long)entry.no_addr,
++			 (unsigned long long)entry.no_addr);
+ 		goto nuke_dentry;
+ 	}
+ 	if (q < gfs2_inode_dir || q > gfs2_inode_sock) {
+ 		log_err( _("Directory entry '%s' referencing inode %llu "
+ 			   "(0x%llx) in dir inode %llu (0x%llx) block type "
+ 			   "%d: %s.\n"), tmp_name,
+-			 (unsigned long long)entryblock,
+-			 (unsigned long long)entryblock,
++			 (unsigned long long)entry.no_addr,
++			 (unsigned long long)entry.no_addr,
+ 			 (unsigned long long)ip->i_di.di_num.no_addr,
+ 			 (unsigned long long)ip->i_di.di_num.no_addr,
+ 			 q, q == gfs2_inode_invalid ?
+@@ -400,8 +468,8 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 		log_err( _("Error: directory entry type is "
+ 			   "incompatible with block type at block %lld "
+ 			   "(0x%llx) in directory inode %llu (0x%llx).\n"),
+-			 (unsigned long long)entryblock,
+-			 (unsigned long long)entryblock,
++			 (unsigned long long)entry.no_addr,
++			 (unsigned long long)entry.no_addr,
+ 			 (unsigned long long)ip->i_di.di_num.no_addr,
+ 			 (unsigned long long)ip->i_di.di_num.no_addr);
+ 		log_err( _("Directory entry type is %d, block type is %d.\n"),
+@@ -413,17 +481,17 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 		log_err( _("Type '%s' in dir entry (%s, %llu/0x%llx) conflicts"
+ 			 " with type '%s' in dinode. (Dir entry is stale.)\n"),
+ 			 de_type_string(de->de_type), tmp_name,
+-			 (unsigned long long)entryblock,
+-			 (unsigned long long)entryblock,
++			 (unsigned long long)entry.no_addr,
++			 (unsigned long long)entry.no_addr,
+ 			 block_type_string(q));
+ 		if (!query( _("Clear stale directory entry? (y/n) "))) {
+ 			log_err( _("Stale directory entry remains\n"));
+ 			goto dentry_is_valid;
+ 		}
+-		if (ip->i_di.di_num.no_addr == entryblock)
++		if (ip->i_di.di_num.no_addr == entry.no_addr)
+ 			entry_ip = ip;
+ 		else
+-			entry_ip = fsck_load_inode(sdp, entryblock);
++			entry_ip = fsck_load_inode(sdp, entry.no_addr);
+ 		check_inode_eattr(entry_ip, &clear_eattrs);
+ 		if (entry_ip != ip)
+ 			fsck_inode_put(&entry_ip);
+@@ -446,10 +514,10 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 				 * and check the rest of the '.' entry? */
+ 				goto dentry_is_valid;
+ 			}
+-			if (ip->i_di.di_num.no_addr == entryblock)
++			if (ip->i_di.di_num.no_addr == entry.no_addr)
+ 				entry_ip = ip;
+ 			else
+-				entry_ip = fsck_load_inode(sdp, entryblock);
++				entry_ip = fsck_load_inode(sdp, entry.no_addr);
+ 			check_inode_eattr(entry_ip, &clear_eattrs);
+ 			if (entry_ip != ip)
+ 				fsck_inode_put(&entry_ip);
+@@ -460,15 +528,15 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 		 * location */
+ 
+ 		/* check that '.' refers to this inode */
+-		if (entryblock != ip->i_di.di_num.no_addr) {
++		if (entry.no_addr != ip->i_di.di_num.no_addr) {
+ 			log_err( _("'.' entry's value incorrect in directory %llu"
+ 				" (0x%llx).  Points to %llu"
+ 				" (0x%llx) when it should point to %llu"
+ 				" (0x%llx).\n"),
+-				(unsigned long long)entryblock,
+-				(unsigned long long)entryblock,
+-				(unsigned long long)entryblock,
+-				(unsigned long long)entryblock,
++				(unsigned long long)entry.no_addr,
++				(unsigned long long)entry.no_addr,
++				(unsigned long long)entry.no_addr,
++				(unsigned long long)entry.no_addr,
+ 				(unsigned long long)ip->i_di.di_num.no_addr,
+ 				(unsigned long long)ip->i_di.di_num.no_addr);
+ 			if (!query( _("Remove '.' reference? (y/n) "))) {
+@@ -477,10 +545,10 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 				 * this '.' entry is invalid */
+ 				goto dentry_is_valid;
+ 			}
+-			if (ip->i_di.di_num.no_addr == entryblock)
++			if (ip->i_di.di_num.no_addr == entry.no_addr)
+ 				entry_ip = ip;
+ 			else
+-				entry_ip = fsck_load_inode(sdp, entryblock);
++				entry_ip = fsck_load_inode(sdp, entry.no_addr);
+ 			check_inode_eattr(entry_ip, &clear_eattrs);
+ 			if (entry_ip != ip)
+ 				fsck_inode_put(&entry_ip);
+@@ -507,10 +575,10 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 				goto dentry_is_valid;
+ 			}
+ 
+-			if (ip->i_di.di_num.no_addr == entryblock)
++			if (ip->i_di.di_num.no_addr == entry.no_addr)
+ 				entry_ip = ip;
+ 			else
+-				entry_ip = fsck_load_inode(sdp, entryblock);
++				entry_ip = fsck_load_inode(sdp, entry.no_addr);
+ 			check_inode_eattr(entry_ip, &clear_eattrs);
+ 			if (entry_ip != ip)
+ 				fsck_inode_put(&entry_ip);
+@@ -527,10 +595,10 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 				log_err( _("Bad '..' directory entry remains\n"));
+ 				goto dentry_is_valid;
+ 			}
+-			if (ip->i_di.di_num.no_addr == entryblock)
++			if (ip->i_di.di_num.no_addr == entry.no_addr)
+ 				entry_ip = ip;
+ 			else
+-				entry_ip = fsck_load_inode(sdp, entryblock);
++				entry_ip = fsck_load_inode(sdp, entry.no_addr);
+ 			check_inode_eattr(entry_ip, &clear_eattrs);
+ 			if (entry_ip != ip)
+ 				fsck_inode_put(&entry_ip);
+@@ -542,7 +610,7 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 		/* Add the address this entry is pointing to
+ 		 * to this inode's dotdot_parent in
+ 		 * dir_info */
+-		if (set_dotdot_dir(sdp, ip->i_di.di_num.no_addr, entryblock)) {
++		if (set_dotdot_dir(sdp, ip->i_di.di_num.no_addr, entry)) {
+ 			stack;
+ 			return -1;
+ 		}
+@@ -555,18 +623,18 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 	if (q != gfs2_inode_dir) {
+ 		log_debug( _("Found non-dir inode dentry pointing to %lld "
+ 			     "(0x%llx)\n"),
+-			   (unsigned long long)entryblock,
+-			   (unsigned long long)entryblock);
++			   (unsigned long long)entry.no_addr,
++			   (unsigned long long)entry.no_addr);
+ 		goto dentry_is_valid;
+ 	}
+ 
+ 	/*log_debug( _("Found plain directory dentry\n"));*/
+-	error = set_parent_dir(sdp, entryblock, ip->i_di.di_num.no_addr);
++	error = set_parent_dir(sdp, entry, ip->i_di.di_num);
+ 	if (error > 0) {
+ 		log_err( _("%s: Hard link to block %llu (0x%llx"
+ 			   ") detected.\n"), tmp_name,
+-			(unsigned long long)entryblock,
+-			(unsigned long long)entryblock);
++			(unsigned long long)entry.no_addr,
++			(unsigned long long)entry.no_addr);
+ 
+ 		if (query( _("Clear hard link to directory? (y/n) ")))
+ 			goto nuke_dentry;
+@@ -580,8 +648,12 @@ static int check_dentry(struct gfs2_inode *ip, struct gfs2_dirent *dent,
+ 	}
+ dentry_is_valid:
+ 	/* This directory inode links to this inode via this dentry */
+-	incr_link_count(entryblock, ip->i_di.di_num.no_addr,
+-			_("valid reference"));
++	error = incr_link_count(entry, ip, _("valid reference"));
++	if (error > 0) {
++		if (bad_formal_ino(ip, dent, entry, tmp_name, q, de, bh) == 1)
++			goto nuke_dentry;
++	}
++
+ 	(*count)++;
+ 	ds->entry_count++;
+ 	/* End of checks */
+@@ -679,8 +751,7 @@ static int check_system_dir(struct gfs2_inode *sysinode, const char *dirname,
+ 			if (cur_blks != sysinode->i_di.di_blocks)
+ 				reprocess_inode(sysinode, dirname);
+ 			/* This system inode is linked to itself via '.' */
+-			incr_link_count(sysinode->i_di.di_num.no_addr,
+-					sysinode->i_di.di_num.no_addr,
++			incr_link_count(sysinode->i_di.di_num, sysinode,
+ 					"sysinode \".\"");
+ 			ds.entry_count++;
+ 			free(filename);
+@@ -905,8 +976,7 @@ int pass2(struct gfs2_sbd *sdp)
+ 					reprocess_inode(ip, dirname);
+ 				}
+ 				/* directory links to itself via '.' */
+-				incr_link_count(ip->i_di.di_num.no_addr,
+-						ip->i_di.di_num.no_addr,
++				incr_link_count(ip->i_di.di_num, ip,
+ 						_("\". (itself)\""));
+ 				ds.entry_count++;
+ 				free(filename);
+diff --git a/gfs2/fsck/pass3.c b/gfs2/fsck/pass3.c
+index daa1809..f5f38c5 100644
+--- a/gfs2/fsck/pass3.c
++++ b/gfs2/fsck/pass3.c
+@@ -67,7 +67,7 @@ static int attach_dotdot_to(struct gfs2_sbd *sdp, uint64_t newdotdot,
+ 			(unsigned long long)ip->i_di.di_num.no_addr);
+ 		reprocess_inode(ip, dirname);
+ 	}
+-	incr_link_count(newdotdot, block, _("new \"..\""));
++	incr_link_count(pip->i_di.di_num, ip, _("new \"..\""));
+ 	fsck_inode_put(&ip);
+ 	fsck_inode_put(&pip);
+ 	free(filename);
+@@ -86,27 +86,28 @@ static struct dir_info *mark_and_return_parent(struct gfs2_sbd *sdp,
+ 	if (!di->treewalk_parent)
+ 		return NULL;
+ 
+-	if (di->dotdot_parent == di->treewalk_parent) {
+-		q_dotdot = block_type(di->dotdot_parent);
++	if (di->dotdot_parent.no_addr == di->treewalk_parent) {
++		q_dotdot = block_type(di->dotdot_parent.no_addr);
+ 		if (q_dotdot != gfs2_inode_dir) {
+ 			log_err( _("Orphaned directory at block %llu (0x%llx) "
+ 				   "moved to lost+found\n"),
+-				 (unsigned long long)di->dinode,
+-				 (unsigned long long)di->dinode);
++				 (unsigned long long)di->dinode.no_addr,
++				 (unsigned long long)di->dinode.no_addr);
+ 			return NULL;
+ 		}
+ 		goto out;
+ 	}
+ 
+ 	log_warn( _("Directory '..' and treewalk connections disagree for "
+-		    "inode %llu (0x%llx)\n"), (unsigned long long)di->dinode,
+-		  (unsigned long long)di->dinode);
++		    "inode %llu (0x%llx)\n"),
++		  (unsigned long long)di->dinode.no_addr,
++		  (unsigned long long)di->dinode.no_addr);
+ 	log_notice( _("'..' has %llu (0x%llx), treewalk has %llu (0x%llx)\n"),
+-		    (unsigned long long)di->dotdot_parent,
+-		    (unsigned long long)di->dotdot_parent,
++		    (unsigned long long)di->dotdot_parent.no_addr,
++		    (unsigned long long)di->dotdot_parent.no_addr,
+ 		    (unsigned long long)di->treewalk_parent,
+ 		    (unsigned long long)di->treewalk_parent);
+-	q_dotdot = block_type(di->dotdot_parent);
++	q_dotdot = block_type(di->dotdot_parent.no_addr);
+ 	q_treewalk = block_type(di->treewalk_parent);
+ 	/* if the dotdot entry isn't a directory, but the
+ 	 * treewalk is, treewalk is correct - if the treewalk
+@@ -126,8 +127,9 @@ static struct dir_info *mark_and_return_parent(struct gfs2_sbd *sdp,
+ 				  (unsigned long long)di->treewalk_parent,
+ 				  (unsigned long long)di->treewalk_parent);
+ 			attach_dotdot_to(sdp, di->treewalk_parent,
+-					 di->dotdot_parent, di->dinode);
+-			di->dotdot_parent = di->treewalk_parent;
++					 di->dotdot_parent.no_addr,
++					 di->dinode.no_addr);
++			di->dotdot_parent.no_addr = di->treewalk_parent;
+ 		}
+ 		goto out;
+ 	}
+@@ -135,8 +137,9 @@ static struct dir_info *mark_and_return_parent(struct gfs2_sbd *sdp,
+ 		log_err( _("Both .. and treewalk parents are directories, "
+ 			   "going with treewalk...\n"));
+ 		attach_dotdot_to(sdp, di->treewalk_parent,
+-				 di->dotdot_parent, di->dinode);
+-		di->dotdot_parent = di->treewalk_parent;
++				 di->dotdot_parent.no_addr,
++				 di->dinode.no_addr);
++		di->dotdot_parent.no_addr = di->treewalk_parent;
+ 		goto out;
+ 	}
+ 	log_warn( _(".. parent is valid, but treewalk is bad - reattaching to "
+@@ -146,14 +149,15 @@ static struct dir_info *mark_and_return_parent(struct gfs2_sbd *sdp,
+ 
+ 	if (!query( _("Remove directory entry for bad inode %llu (0x%llx) in "
+ 		      "%llu (0x%llx)? (y/n)"),
+-		    (unsigned long long)di->dinode,
+-		    (unsigned long long)di->dinode,
++		    (unsigned long long)di->dinode.no_addr,
++		    (unsigned long long)di->dinode.no_addr,
+ 		    (unsigned long long)di->treewalk_parent,
+ 		    (unsigned long long)di->treewalk_parent)) {
+ 		log_err( _("Directory entry to invalid inode remains\n"));
+ 		return NULL;
+ 	}
+-	error = remove_dentry_from_dir(sdp, di->treewalk_parent, di->dinode);
++	error = remove_dentry_from_dir(sdp, di->treewalk_parent,
++				       di->dinode.no_addr);
+ 	if (error < 0) {
+ 		stack;
+ 		return NULL;
+@@ -161,8 +165,8 @@ static struct dir_info *mark_and_return_parent(struct gfs2_sbd *sdp,
+ 	if (error > 0)
+ 		log_warn( _("Unable to find dentry for block %llu"
+ 			    " (0x%llx) in %llu (0x%llx)\n"),
+-			  (unsigned long long)di->dinode,
+-			  (unsigned long long)di->dinode,
++			  (unsigned long long)di->dinode.no_addr,
++			  (unsigned long long)di->dinode.no_addr,
+ 			  (unsigned long long)di->treewalk_parent,
+ 			  (unsigned long long)di->treewalk_parent);
+ 	log_warn( _("Directory entry removed\n"));
+@@ -171,7 +175,7 @@ static struct dir_info *mark_and_return_parent(struct gfs2_sbd *sdp,
+ 	return NULL;
+ 
+ out:
+-	pdi = dirtree_find(di->dotdot_parent);
++	pdi = dirtree_find(di->dotdot_parent.no_addr);
+ 
+ 	return pdi;
+ }
+@@ -245,13 +249,14 @@ int pass3(struct gfs2_sbd *sdp)
+ 			tdi = mark_and_return_parent(sdp, di);
+ 
+ 			if (tdi) {
+-				log_debug( _("Directory at block %" PRIu64
+-					     " (0x%" PRIx64 ") connected\n"),
+-					   di->dinode, di->dinode);
++				log_debug( _("Directory at block %llu "
++					     "(0x%llx) connected\n"),
++					   (unsigned long long)di->dinode.no_addr,
++					   (unsigned long long)di->dinode.no_addr);
+ 				di = tdi;
+ 				continue;
+ 			}
+-			q = block_type(di->dinode);
++			q = block_type(di->dinode.no_addr);
+ 			if (q == gfs2_bad_block) {
+ 				log_err( _("Found unlinked directory "
+ 					   "containing bad block\n"));
+@@ -260,14 +265,14 @@ int pass3(struct gfs2_sbd *sdp)
+ 					log_warn( _("inode %lld (0x%llx) is "
+ 						    "now marked as free\n"),
+ 						  (unsigned long long)
+-						  di->dinode,
++						  di->dinode.no_addr,
+ 						  (unsigned long long)
+-						  di->dinode);
++						  di->dinode.no_addr);
+ 					/* Can't use fsck_blockmap_set
+ 					   because we don't have ip */
+-					gfs2_blockmap_set(bl, di->dinode,
++					gfs2_blockmap_set(bl, di->dinode.no_addr,
+ 							  gfs2_block_free);
+-					check_n_fix_bitmap(sdp, di->dinode,
++					check_n_fix_bitmap(sdp, di->dinode.no_addr,
+ 							   gfs2_block_free);
+ 					break;
+ 				} else
+@@ -286,29 +291,31 @@ int pass3(struct gfs2_sbd *sdp)
+ 				}
+ 				log_warn( _("inode %lld (0x%llx) is now "
+ 					    "marked as free\n"),
+-					  (unsigned long long)di->dinode,
+-					  (unsigned long long)di->dinode);
++					  (unsigned long long)di->dinode.no_addr,
++					  (unsigned long long)di->dinode.no_addr);
+ 				/* Can't use fsck_blockmap_set
+ 				   because we don't have ip */
+-				gfs2_blockmap_set(bl, di->dinode,
++				gfs2_blockmap_set(bl, di->dinode.no_addr,
+ 						  gfs2_block_free);
+-				check_n_fix_bitmap(sdp, di->dinode,
++				check_n_fix_bitmap(sdp, di->dinode.no_addr,
+ 						   gfs2_block_free);
+ 				log_err( _("The block was cleared\n"));
+ 				break;
+ 			}
+ 
+ 			log_err( _("Found unlinked directory at block %llu"
+-				   " (0x%llx)\n"), (unsigned long long)di->dinode,
+-				 (unsigned long long)di->dinode);
+-			ip = fsck_load_inode(sdp, di->dinode);
++				   " (0x%llx)\n"),
++				 (unsigned long long)di->dinode.no_addr,
++				 (unsigned long long)di->dinode.no_addr);
++			ip = fsck_load_inode(sdp, di->dinode.no_addr);
+ 			/* Don't skip zero size directories with eattrs */
+ 			if (!ip->i_di.di_size && !ip->i_di.di_eattr){
+ 				log_err( _("Unlinked directory has zero "
+ 					   "size.\n"));
+ 				if (query( _("Remove zero-size unlinked "
+ 					    "directory? (y/n) "))) {
+-					fsck_blockmap_set(ip, di->dinode,
++					fsck_blockmap_set(ip,
++							  di->dinode.no_addr,
+ 						_("zero-sized unlinked inode"),
+ 							  gfs2_block_free);
+ 					fsck_inode_put(&ip);
+diff --git a/gfs2/fsck/pass4.c b/gfs2/fsck/pass4.c
+index 6d933e9..4605671 100644
+--- a/gfs2/fsck/pass4.c
++++ b/gfs2/fsck/pass4.c
+@@ -58,28 +58,28 @@ static int scan_inode_list(struct gfs2_sbd *sdp) {
+ 		}
+ 		/* Don't check reference counts on the special gfs files */
+ 		if (sdp->gfs1 &&
+-		    ((ii->inode == sdp->md.riinode->i_di.di_num.no_addr) ||
+-		     (ii->inode == sdp->md.jiinode->i_di.di_num.no_addr) ||
+-		     (ii->inode == sdp->md.qinode->i_di.di_num.no_addr) ||
+-		     (ii->inode == sdp->md.statfs->i_di.di_num.no_addr)))
++		    ((ii->di_num.no_addr == sdp->md.riinode->i_di.di_num.no_addr) ||
++		     (ii->di_num.no_addr == sdp->md.jiinode->i_di.di_num.no_addr) ||
++		     (ii->di_num.no_addr == sdp->md.qinode->i_di.di_num.no_addr) ||
++		     (ii->di_num.no_addr == sdp->md.statfs->i_di.di_num.no_addr)))
+ 			continue;
+ 		if (ii->counted_links == 0) {
+ 			log_err( _("Found unlinked inode at %llu (0x%llx)\n"),
+-				(unsigned long long)ii->inode,
+-				(unsigned long long)ii->inode);
+-			q = block_type(ii->inode);
++				(unsigned long long)ii->di_num.no_addr,
++				(unsigned long long)ii->di_num.no_addr);
++			q = block_type(ii->di_num.no_addr);
+ 			if (q == gfs2_bad_block) {
+ 				log_err( _("Unlinked inode %llu (0x%llx) contains "
+ 					"bad blocks\n"),
+-					(unsigned long long)ii->inode,
+-					(unsigned long long)ii->inode);
++					(unsigned long long)ii->di_num.no_addr,
++					(unsigned long long)ii->di_num.no_addr);
+ 				if (query(  _("Delete unlinked inode with bad "
+ 					     "blocks? (y/n) "))) {
+-					ip = fsck_load_inode(sdp, ii->inode);
++					ip = fsck_load_inode(sdp, ii->di_num.no_addr);
+ 					check_inode_eattr(ip,
+ 							  &pass4_fxns_delete);
+ 					check_metatree(ip, &pass4_fxns_delete);
+-					fsck_blockmap_set(ip, ii->inode,
++					fsck_blockmap_set(ip, ii->di_num.no_addr,
+ 							  _("bad unlinked"),
+ 							  gfs2_block_free);
+ 					fsck_inode_put(&ip);
+@@ -96,14 +96,14 @@ static int scan_inode_list(struct gfs2_sbd *sdp) {
+ 				log_err( _("Unlinked block %lld (0x%llx) "
+ 					   "marked as inode is "
+ 					   "not an inode (%d)\n"),
+-					 (unsigned long long)ii->inode,
+-					 (unsigned long long)ii->inode, q);
+-				ip = fsck_load_inode(sdp, ii->inode);
++					 (unsigned long long)ii->di_num.no_addr,
++					 (unsigned long long)ii->di_num.no_addr, q);
++				ip = fsck_load_inode(sdp, ii->di_num.no_addr);
+ 				if (query(_("Delete unlinked inode? (y/n) "))) {
+ 					check_inode_eattr(ip,
+ 							  &pass4_fxns_delete);
+ 					check_metatree(ip, &pass4_fxns_delete);
+-					fsck_blockmap_set(ip, ii->inode,
++					fsck_blockmap_set(ip, ii->di_num.no_addr,
+ 						  _("invalid unlinked"),
+ 							  gfs2_block_free);
+ 					fsck_inode_put(&ip);
+@@ -115,7 +115,7 @@ static int scan_inode_list(struct gfs2_sbd *sdp) {
+ 				}
+ 				continue;
+ 			}
+-			ip = fsck_load_inode(sdp, ii->inode);
++			ip = fsck_load_inode(sdp, ii->di_num.no_addr);
+ 
+ 			/* We don't want to clear zero-size files with
+ 			 * eattrs - there might be relevent info in
+@@ -124,7 +124,7 @@ static int scan_inode_list(struct gfs2_sbd *sdp) {
+ 				log_err( _("Unlinked inode has zero size\n"));
+ 				if (query(_("Clear zero-size unlinked inode? "
+ 					   "(y/n) "))) {
+-					fsck_blockmap_set(ip, ii->inode,
++					fsck_blockmap_set(ip, ii->di_num.no_addr,
+ 						_("unlinked zero-length"),
+ 							  gfs2_block_free);
+ 					fsck_inode_put(&ip);
+@@ -149,32 +149,34 @@ static int scan_inode_list(struct gfs2_sbd *sdp) {
+ 		else if (ii->di_nlink != ii->counted_links) {
+ 			log_err( _("Link count inconsistent for inode %llu"
+ 				" (0x%llx) has %u but fsck found %u.\n"),
+-				(unsigned long long)ii->inode, 
+-				(unsigned long long)ii->inode, ii->di_nlink,
++				(unsigned long long)ii->di_num.no_addr, 
++				(unsigned long long)ii->di_num.no_addr, ii->di_nlink,
+ 				ii->counted_links);
+ 			/* Read in the inode, adjust the link count,
+ 			 * and write it back out */
+ 			if (query( _("Update link count for inode %llu"
+ 				    " (0x%llx) ? (y/n) "),
+-				  (unsigned long long)ii->inode,
+-				  (unsigned long long)ii->inode)) {
+-				ip = fsck_load_inode(sdp, ii->inode); /* bread, inode_get */
++				  (unsigned long long)ii->di_num.no_addr,
++				  (unsigned long long)ii->di_num.no_addr)) {
++				ip = fsck_load_inode(sdp, ii->di_num.no_addr); /* bread, inode_get */
+ 				fix_link_count(ii, ip);
+ 				ii->di_nlink = ii->counted_links;
+ 				fsck_inode_put(&ip); /* out, brelse, free */
+ 				log_warn( _("Link count updated to %d for "
+ 					    "inode %llu (0x%llx)\n"),
+ 					  ii->di_nlink,
+-					  (unsigned long long)ii->inode,
+-					  (unsigned long long)ii->inode);
++					  (unsigned long long)ii->di_num.no_addr,
++					  (unsigned long long)ii->di_num.no_addr);
+ 			} else {
+-				log_err( _("Link count for inode %" PRIu64 " (0x%" PRIx64
+-						") still incorrect\n"), ii->inode, ii->inode);
++				log_err( _("Link count for inode %llu (0x%llx"
++					   ") still incorrect\n"),
++					 (unsigned long long)ii->di_num.no_addr,
++					 (unsigned long long)ii->di_num.no_addr);
+ 			}
+ 		}
+ 		log_debug( _("block %llu (0x%llx) has link count %d\n"),
+-			 (unsigned long long)ii->inode,
+-			 (unsigned long long)ii->inode, ii->di_nlink);
++			 (unsigned long long)ii->di_num.no_addr,
++			 (unsigned long long)ii->di_num.no_addr, ii->di_nlink);
+ 	} /* osi_list_foreach(tmp, list) */
+ 
+ 	if (lf_addition) {
+diff --git a/gfs2/fsck/util.c b/gfs2/fsck/util.c
+index 92818fb..24bae6f 100644
+--- a/gfs2/fsck/util.c
++++ b/gfs2/fsck/util.c
+@@ -309,7 +309,7 @@ int add_duplicate_ref(struct gfs2_inode *ip, uint64_t block,
+ 	return 0;
+ }
+ 
+-struct dir_info *dirtree_insert(uint64_t dblock)
++struct dir_info *dirtree_insert(struct gfs2_inum inum)
+ {
+ 	struct osi_node **newn = &dirtree.osi_node, *parent = NULL;
+ 	struct dir_info *data;
+@@ -319,9 +319,9 @@ struct dir_info *dirtree_insert(uint64_t dblock)
+ 		struct dir_info *cur = (struct dir_info *)*newn;
+ 
+ 		parent = *newn;
+-		if (dblock < cur->dinode)
++		if (inum.no_addr < cur->dinode.no_addr)
+ 			newn = &((*newn)->osi_left);
+-		else if (dblock > cur->dinode)
++		else if (inum.no_addr > cur->dinode.no_addr)
+ 			newn = &((*newn)->osi_right);
+ 		else
+ 			return cur;
+@@ -337,7 +337,8 @@ struct dir_info *dirtree_insert(uint64_t dblock)
+ 		return NULL;
+ 	}
+ 	/* Add new node and rebalance tree. */
+-	data->dinode = dblock;
++	data->dinode.no_addr = inum.no_addr;
++	data->dinode.no_formal_ino = inum.no_formal_ino;
+ 	osi_link_node(&data->node, parent, newn);
+ 	osi_insert_color(&data->node, &dirtree);
+ 
+@@ -351,9 +352,9 @@ struct dir_info *dirtree_find(uint64_t block)
+ 	while (node) {
+ 		struct dir_info *data = (struct dir_info *)node;
+ 
+-		if (block < data->dinode)
++		if (block < data->dinode.no_addr)
+ 			node = node->osi_left;
+-		else if (block > data->dinode)
++		else if (block > data->dinode.no_addr)
+ 			node = node->osi_right;
+ 		else
+ 			return data;
+@@ -488,7 +489,7 @@ int set_ip_blockmap(struct gfs2_inode *ip, int instree)
+ 		if (fsck_blockmap_set(ip, block, _("directory"),
+ 				      gfs2_inode_dir))
+ 			goto bad_dinode;
+-		if (instree && !dirtree_insert(block))
++		if (instree && !dirtree_insert(ip->i_di.di_num))
+ 			goto bad_dinode;
+ 		break;
+ 	case S_IFREG:

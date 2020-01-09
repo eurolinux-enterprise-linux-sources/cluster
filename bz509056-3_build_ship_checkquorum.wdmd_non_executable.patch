@@ -1,0 +1,23 @@
+commit f5f29115b364e590a6f6fb1f560a4a268ab23fff
+Author: Radek Steiger <rsteiger@redhat.com>
+Date:   Mon Jan 7 18:44:30 2013 +0100
+
+    build: ship checkquorum.wdmd non executable
+    
+    this avoids some selinux/rgmanager integration issues
+    
+    Resolves: rhbz#509056
+    
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/cman/scripts/Makefile b/cman/scripts/Makefile
+index 7950311..f80f7e4 100644
+--- a/cman/scripts/Makefile
++++ b/cman/scripts/Makefile
+@@ -1,4 +1,5 @@
+-SHAREDIRTEX=checkquorum checkquorum.wdmd
++SHAREDIRTEX=checkquorum
++SHAREDIRT=checkquorum.wdmd
+ 
+ include ../../make/defines.mk
+ include $(OBJDIR)/make/clean.mk

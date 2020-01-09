@@ -1,0 +1,191 @@
+commit 54904ce52d5658debffe92d8f1cdc5ab15ce96c3
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Tue Apr 2 13:19:35 2013 -0700
+
+    fsck.gfs2: Don't flag GFS1 non-dinode blocks as duplicates
+    
+    Before this patch, fsck.gfs2 could get into problems when processing
+    a GFS1 file system. The issue goes back to the fact that all GFS1
+    metadata is marked as "Meta" in the bitmap, whereas that bitmap
+    designation is reserved for dinodes in GFS2. For example, take a
+    GFS1 file of height 2, which looks like this:
+    
+    Block
+    ------
+    0x1234 dinode
+    0x1235 |----> indirect meta
+    0x1236        |---->data at offset 0 of the file
+    
+    Before this patch, fsck.gfs2 would:
+    
+    1. Encounter the dinode at 0x1234 and mark it as "dinode" in the
+       blockmap.
+    2. Process its metadata, see block 0x1235, mark it as "indirect meta"
+       in the blockmap.
+    3. Process the metadata's data, see block 0x1236, mark it as "data".
+    4. When it's done with the dinode, it moves on to the next dinode.
+       But since GFS1 doesn't distinguish dinodes from other metadata,
+       the next block in the bitmap that has that designation is block
+       0x1235.
+    5. Since block 0x1235 was previously marked "indirect meta" pass1
+       gets confused and thinks the block is a duplicate reference,
+       and it's invalid as a dinode. This is a non-problem that's
+       treated as a problem, and it makes bad decisions based on it,
+       deleting what it perceives to be corruption.
+    
+    This patch adds special checks for this problem and assumes the block
+    is just normal GFS1 non-dinode metadata.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index 90b865f..e10e4ce 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -1083,22 +1083,11 @@ bad_dinode:
+  */
+ static int handle_di(struct gfs2_sbd *sdp, struct gfs2_buffer_head *bh)
+ {
+-	uint8_t q;
+ 	int error = 0;
+ 	uint64_t block = bh->b_blocknr;
+ 	struct gfs2_inode *ip;
+ 
+ 	ip = fsck_inode_get(sdp, bh);
+-	q = block_type(block);
+-	if (q != gfs2_block_free) {
+-		log_err( _("Found a duplicate inode block at #%llu"
+-			   " (0x%llx) previously marked as a %s\n"),
+-			 (unsigned long long)block,
+-			 (unsigned long long)block, block_type_string(q));
+-		add_duplicate_ref(ip, block, ref_as_meta, 0, INODE_VALID);
+-		fsck_inode_put(&ip);
+-		return 0;
+-	}
+ 
+ 	if (ip->i_di.di_num.no_addr != block) {
+ 		log_err( _("Inode #%llu (0x%llx): Bad inode address found: %llu "
+@@ -1367,11 +1356,13 @@ int pass1(struct gfs2_sbd *sdp)
+ {
+ 	struct osi_node *n, *next = NULL;
+ 	struct gfs2_buffer_head *bh;
++	struct gfs2_inode *ip;
+ 	uint64_t block = 0;
+ 	struct rgrp_tree *rgd;
+ 	int first;
+ 	uint64_t i;
+ 	uint64_t rg_count = 0;
++	uint8_t q;
+ 
+ 	osi_list_init(&gfs1_rindex_blks.list);
+ 
+@@ -1417,6 +1408,9 @@ int pass1(struct gfs2_sbd *sdp)
+ 		first = 1;
+ 
+ 		while (1) {
++			int is_inode;
++			uint32_t check_magic;
++
+ 			/* "block" is relative to the entire file system */
+ 			/* Get the next dinode in the file system, according
+ 			   to the bitmap.  This should ONLY be dinodes unless
+@@ -1451,12 +1445,55 @@ int pass1(struct gfs2_sbd *sdp)
+ 				first = 0;
+ 				continue;
+ 			}
++
+ 			bh = bread(sdp, block);
+ 
++			is_inode = 0;
++			if (gfs2_check_meta(bh, GFS2_METATYPE_DI) == 0)
++				is_inode = 1;
++
++			check_magic = ((struct gfs2_meta_header *)
++				       (bh->b_data))->mh_magic;
++
++			q = block_type(block);
++			if (q != gfs2_block_free) {
++				if (be32_to_cpu(check_magic) == GFS2_MAGIC &&
++				    sdp->gfs1 && !is_inode) {
++					log_debug("Block 0x%llx assumed to be "
++						  "previously processed GFS1 "
++						  "non-dinode metadata.\n",
++						  (unsigned long long)block);
++					brelse(bh);
++					first = 0;
++					continue;
++				}
++				log_err( _("Found a duplicate inode block at "
++					   "#%llu (0x%llx) previously marked "
++					   "as a %s\n"),
++					 (unsigned long long)block,
++					 (unsigned long long)block,
++					 block_type_string(q));
++				ip = fsck_inode_get(sdp, bh);
++				if (is_inode &&
++				    ip->i_di.di_num.no_addr == block)
++					add_duplicate_ref(ip, block,
++							  ref_is_inode, 0,
++							  INODE_VALID);
++				else
++					log_info(_("dinum.no_addr is wrong, "
++						   "so I assume the bitmap is "
++						   "just wrong.\n"));
++				fsck_inode_put(&ip);
++				brelse(bh);
++				first = 0;
++				continue;
++			}
++
+ 			/*log_debug( _("Checking metadata block #%" PRIu64
+ 			  " (0x%" PRIx64 ")\n"), block, block);*/
+ 
+-			if (gfs2_check_meta(bh, GFS2_METATYPE_DI)) {
++			if (!is_inode) {
++				if (be32_to_cpu(check_magic) == GFS2_MAGIC) {
+ 				/* In gfs2, a bitmap mark of 2 means an inode,
+ 				   but in gfs1 it means any metadata.  So if
+ 				   this is gfs1 and not an inode, it may be
+@@ -1464,14 +1501,7 @@ int pass1(struct gfs2_sbd *sdp)
+ 				   be referenced by an inode, so we need to
+ 				   skip it here and it will be sorted out
+ 				   when the referencing inode is checked. */
+-				if (sdp->gfs1) {
+-					uint32_t check_magic;
+-
+-					check_magic = ((struct
+-							gfs2_meta_header *)
+-						       (bh->b_data))->mh_magic;
+-					if (be32_to_cpu(check_magic) ==
+-					    GFS2_MAGIC) {
++					if (sdp->gfs1) {
+ 						log_debug( _("Deferring GFS1 "
+ 							     "metadata block #"
+ 							     "%" PRIu64" (0x%"
+@@ -1481,20 +1511,13 @@ int pass1(struct gfs2_sbd *sdp)
+ 						first = 0;
+ 						continue;
+ 					}
++					log_err( _("Found invalid inode at "
++						   "block #%llu (0x%llx)\n"),
++						 (unsigned long long)block,
++						 (unsigned long long)block);
++					check_n_fix_bitmap(sdp, block,
++							   gfs2_block_free);
+ 				}
+-				log_err( _("Found invalid inode at block #"
+-					   "%llu (0x%llx)\n"),
+-					 (unsigned long long)block,
+-					 (unsigned long long)block);
+-				if (gfs2_blockmap_set(bl, block,
+-						      gfs2_block_free)) {
+-					stack;
+-					brelse(bh);
+-					gfs2_special_free(&gfs1_rindex_blks);
+-					return FSCK_ERROR;
+-				}
+-				check_n_fix_bitmap(sdp, block,
+-						   gfs2_block_free);
+ 			} else if (handle_di(sdp, bh) < 0) {
+ 				stack;
+ 				brelse(bh);

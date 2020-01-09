@@ -1,0 +1,25 @@
+commit cac6df6f85e0fe776ef53750d93708223c6534d1
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Thu Aug 15 07:34:26 2013 -0500
+
+    libgfs2: check return code of rename
+    
+    This patch adds code to check the return code of 'rename' while
+    trying to update /etc/mtab.
+    
+    rhbz#996233
+
+diff --git a/gfs2/libgfs2/misc.c b/gfs2/libgfs2/misc.c
+index a6738b6..f7fab7e 100644
+--- a/gfs2/libgfs2/misc.c
++++ b/gfs2/libgfs2/misc.c
+@@ -246,7 +246,8 @@ static void remove_mtab_entry(struct gfs2_sbd *sdp)
+ 	endmntent(mtab);
+ 	fclose(mtabnew);
+ 	close(fd);
+-	rename(mtab_tmpfn, "/etc/mtab");
++	if (rename(mtab_tmpfn, "/etc/mtab"))
++		fprintf(stderr, "Unable to add mount entry to mtab.\n");
+ }
+ 
+ void cleanup_metafs(struct gfs2_sbd *sdp)

@@ -1,0 +1,33 @@
+From 9f3aa3018314f9d1a93024bc554fdf020256caaa Mon Sep 17 00:00:00 2001
+From: Bob Peterson <rpeterso@redhat.com>
+Date: Tue, 18 Dec 2012 14:14:08 -0600
+Subject: [PATCH 6/8] gfs2_convert: clear out old di_mode before setting it
+
+This patch clears the dinode 'di_mode' inode type field before
+setting it based on the GFS1 value. In rare circumstances
+(e.g. fsck.gfs2 ran on a GFS1 file system and created lost+found
+with both GFS1 and GFS2 data) di_mode might have an old value.
+In these cases, simply doing a logical 'or' with the correct
+value produces an invalid value. Zeroing it out beforehand ensures
+it is set correctly based on the GFS1 type.
+
+rhbz#888053
+---
+ gfs2/convert/gfs2_convert.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/gfs2/convert/gfs2_convert.c b/gfs2/convert/gfs2_convert.c
+index d6fe1c8..6f3dfb3 100644
+--- a/gfs2/convert/gfs2_convert.c
++++ b/gfs2/convert/gfs2_convert.c
+@@ -897,6 +897,7 @@ static int adjust_inode(struct gfs2_sbd *sbp, struct gfs2_buffer_head *bh)
+ 	inode->i_di.di_num.no_formal_ino = sbp->md.next_inum;           ;
+ 	
+ 	/* Fix the inode type: gfs1 uses di_type, gfs2 uses di_mode. */
++	inode->i_di.di_mode &= ~S_IFMT;
+ 	switch (inode->i_di.__pad1) { /* formerly di_type */
+ 	case GFS_FILE_DIR:           /* directory        */
+ 		inode->i_di.di_mode |= S_IFDIR;
+-- 
+1.7.11.7
+

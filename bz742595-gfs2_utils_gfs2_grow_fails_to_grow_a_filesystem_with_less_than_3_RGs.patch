@@ -1,0 +1,140 @@
+commit 86305c1b640ac08763df49e4845c9faefea9cfa8
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Fri Sep 30 10:02:34 2011 -0500
+
+    gfs2-utils: gfs2_grow fails to grow a filesystem with less than 3 RGs
+    
+    This patch fixes a problem with gfs2-utils whereby some of the utils
+    couldn't handle a small file system with one or two rgrps.
+    The biggest offender was gfs2_grow: you couldn't successfully
+    gfs2_grow a file system that was so small that it had only one
+    resource group.  Also, "gfs2_edit savemeta" couldn't save it.
+    This patch fixes the problem by creating a generic rgrp_size function
+    in libgfs2 that calculates the size rather than judging its
+    distance from the previous rgrp.
+    
+    rhbz#742595
+
+diff --git a/gfs2/edit/savemeta.c b/gfs2/edit/savemeta.c
+index 84499d0..30320f0 100644
+--- a/gfs2/edit/savemeta.c
++++ b/gfs2/edit/savemeta.c
+@@ -73,7 +73,7 @@ static const char *anthropomorphize(unsigned long long inhuman_value)
+ {
+ 	const char *symbols = " KMGTPE";
+ 	int i;
+-	unsigned long long val = inhuman_value, remainder;
++	unsigned long long val = inhuman_value, remainder = 0;
+ 	static char out_val[32];
+ 
+ 	memset(out_val, 0, sizeof(out_val));
+diff --git a/gfs2/libgfs2/fs_geometry.c b/gfs2/libgfs2/fs_geometry.c
+index 067c5f3..c29543f 100644
+--- a/gfs2/libgfs2/fs_geometry.c
++++ b/gfs2/libgfs2/fs_geometry.c
+@@ -111,7 +111,7 @@ void compute_rgrp_layout(struct gfs2_sbd *sdp, struct osi_root *rgtree,
+ 			rlast = rl;
+ 		}
+ 		rlast->start = rlast->ri.ri_addr;
+-		rglength = rlast->ri.ri_addr - rlast2->ri.ri_addr;
++		rglength = rgrp_size(rlast);
+ 		rlast->length = rglength;
+ 		old_length = rlast->ri.ri_addr + rglength;
+ 		new_chunk = dev->length - old_length;
+diff --git a/gfs2/libgfs2/libgfs2.h b/gfs2/libgfs2/libgfs2.h
+index f60654c..1b0b98d 100644
+--- a/gfs2/libgfs2/libgfs2.h
++++ b/gfs2/libgfs2/libgfs2.h
+@@ -707,6 +707,11 @@ extern void gfs2_rgrp_relse(struct rgrp_tree *rgd);
+ extern struct rgrp_tree *rgrp_insert(struct osi_root *rgtree,
+ 				     uint64_t rgblock);
+ extern void gfs2_rgrp_free(struct osi_root *rgrp_tree);
++/* figure out the size of the given resource group, in blocks */
++static inline unsigned int rgrp_size(struct rgrp_tree *rgrp)
++{
++	return rgrp->ri.ri_data + rgrp->ri.ri_length;
++}
+ 
+ /* structures.c */
+ extern int build_master(struct gfs2_sbd *sdp);
+diff --git a/gfs2/libgfs2/super.c b/gfs2/libgfs2/super.c
+index 2cac1c3..f8de2e6 100644
+--- a/gfs2/libgfs2/super.c
++++ b/gfs2/libgfs2/super.c
+@@ -192,7 +192,7 @@ int rindex_read(struct gfs2_sbd *sdp, int fd, int *count1, int *sane)
+ 					*sane = 0;
+ 			}
+ 			prev_length = rgd->start - prev_rgd->start;
+-			prev_rgd->length = prev_length;
++			prev_rgd->length = rgrp_size(prev_rgd);
+ 		}
+ 
+ 		if(gfs2_compute_bitstructs(sdp, rgd))
+@@ -202,7 +202,7 @@ int rindex_read(struct gfs2_sbd *sdp, int fd, int *count1, int *sane)
+ 		prev_rgd = rgd;
+ 	}
+ 	if (prev_rgd)
+-		prev_rgd->length = prev_length;
++		prev_rgd->length = rgrp_size(prev_rgd);
+ 	return 0;
+ }
+ 
+diff --git a/gfs2/mkfs/main_grow.c b/gfs2/mkfs/main_grow.c
+index d2d5e05..06d8cba 100644
+--- a/gfs2/mkfs/main_grow.c
++++ b/gfs2/mkfs/main_grow.c
+@@ -121,23 +121,6 @@ static void decode_arguments(int argc, char *argv[], struct gfs2_sbd *sdp)
+ }
+ 
+ /**
+- * figure_out_rgsize
+- */
+-static void figure_out_rgsize(struct gfs2_sbd *sdp, unsigned int *orgsize)
+-{
+-	struct osi_node *n = osi_first(&sdp->rgtree), *next = NULL;
+-	struct rgrp_tree *r1, *r2;
+-
+-	sdp->rgsize = GFS2_DEFAULT_RGSIZE;
+-	next = osi_next(n);
+-	r1 = (struct rgrp_tree *)next;
+-	next = osi_next(next);
+-	r2 = (struct rgrp_tree *)next;
+-
+-	*orgsize = r2->ri.ri_addr - r1->ri.ri_addr;
+-}
+-
+-/**
+  * filesystem_size - Calculate the size of the filesystem
+  *
+  * Reads the lists of resource groups in order to
+@@ -322,6 +305,7 @@ main_grow(int argc, char *argv[])
+ 	
+ 	while ((argc - optind) > 0) {
+ 		int sane;
++		struct rgrp_tree *last_rgrp;
+ 
+ 		sdp->path_name = argv[optind++];
+ 		sdp->path_fd = open(sdp->path_name, O_RDONLY | O_CLOEXEC);
+@@ -389,7 +373,13 @@ main_grow(int argc, char *argv[])
+ 		/* the existing RGs, and only write to the index at EOF.    */
+ 		ri_update(sdp, rindex_fd, &rgcount, &sane);
+ 		fssize = filesystem_size(sdp);
+-		figure_out_rgsize(sdp, &rgsize);
++		if (!sdp->rgtree.osi_node) {
++			log_err(_("Error: No resource groups found.\n"));
++			goto out;
++		}
++		last_rgrp = (struct rgrp_tree *)osi_last(&sdp->rgtree);
++		sdp->rgsize = GFS2_DEFAULT_RGSIZE;
++		rgsize = rgrp_size(last_rgrp);
+ 		fsgrowth = ((sdp->device.length - fssize) * sdp->bsize);
+ 		if (fsgrowth < rgsize * sdp->bsize) {
+ 			log_err( _("Error: The device has grown by less than "
+@@ -407,6 +397,7 @@ main_grow(int argc, char *argv[])
+ 			initialize_new_portion(sdp, &old_rg_count);
+ 			fix_rindex(sdp, rindex_fd, old_rg_count);
+ 		}
++	out:
+ 		/* Delete the remaining RGs from the rglist */
+ 		gfs2_rgrp_free(&sdp->rgtree);
+ 		close(rindex_fd);

@@ -1,0 +1,37 @@
+commit 20f19daca1f21428748249e7982134b7a9728777
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Tue Jun 4 11:58:06 2013 -0500
+
+    gfs2_edit: print formal inode numbers and hash value on dir display
+    
+    This patch changes the directory display screen of gfs2_edit so that
+    it prints out the hash value and formal inode number. This makes it
+    easier to debug directory problems.
+
+diff --git a/gfs2/edit/extended.c b/gfs2/edit/extended.c
+index 07c6421..2924292 100644
+--- a/gfs2/edit/extended.c
++++ b/gfs2/edit/extended.c
+@@ -339,7 +339,7 @@ static int display_leaf(struct iinfo *ind)
+ 			break;
+ 		total_dirents++;
+ 		if (ind->ii[0].dirents >= 1) {
+-			eol(5);
++			eol(3);
+ 			if (termlines) {
+ 				if (edit_row[dmode] >=0 &&
+ 				    line - start_line - 1 ==
+@@ -350,9 +350,12 @@ static int display_leaf(struct iinfo *ind)
+ 					strcpy(edit_fmt, "%"PRIx64);
+ 				}
+ 			}
+-			print_gfs2("%d. (%d). %lld (0x%llx): ",
++			print_gfs2("%d/%d [%08x] %lld/%lld (0x%llx/0x%llx): ",
+ 				   total_dirents, d + 1,
++				   ind->ii[0].dirent[d].dirent.de_hash,
++				   ind->ii[0].dirent[d].dirent.de_inum.no_formal_ino,
+ 				   ind->ii[0].dirent[d].block,
++				   ind->ii[0].dirent[d].dirent.de_inum.no_formal_ino,
+ 				   ind->ii[0].dirent[d].block);
+ 		}
+ 		print_inode_type(ind->ii[0].dirent[d].dirent.de_type);

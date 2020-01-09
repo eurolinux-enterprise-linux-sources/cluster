@@ -1,0 +1,43 @@
+diff --git a/config/tools/xml/cluster.rng.in.head b/config/tools/xml/cluster.rng.in.head
+index 4e3d901..f42269c 100644
+--- a/config/tools/xml/cluster.rng.in.head
++++ b/config/tools/xml/cluster.rng.in.head
+@@ -460,11 +460,6 @@ To validate your cluster.conf against this schema, run:
+ 	startup fencing. fenced(8)"/>
+    </optional>
+ 
+-   <optional>
+-    <attribute name="skip_undefined" rha:description="Set to 1 to disable
+-	startup fencing of nodes with no fence methods defined.
+-	fenced(8)"/>
+-   </optional>
+   </element>
+  </optional>
+ <!-- end fence_daemon block -->
+diff --git a/fence/fenced/main.c b/fence/fenced/main.c
+index 924b8c9..ab860b7 100644
+--- a/fence/fenced/main.c
++++ b/fence/fenced/main.c
+@@ -911,7 +911,7 @@ static void print_usage(void)
+ 	printf("               the daemon to start.  \"-\" to skip default directories\n");
+ 	printf("               /sys/fs/gfs, /sys/fs/gfs2, /sys/kernel/dlm\n");
+ 	printf("  -c           All nodes are in a clean state to start; do no startup fencing\n");
+-	printf("  -s           Skip startup fencing of nodes with no defined fence methods\n");
++//	printf("  -s           Skip startup fencing of nodes with no defined fence methods\n");
+ 	printf("  -j <secs>    Post-join fencing delay (default %d)\n", DEFAULT_POST_JOIN_DELAY);
+ 	printf("  -f <secs>    Post-fail fencing delay (default %d)\n", DEFAULT_POST_FAIL_DELAY);
+ 	printf("  -R <secs>    Override time (default %d)\n", DEFAULT_OVERRIDE_TIME);
+diff --git a/fence/man/fenced.8 b/fence/man/fenced.8
+index b172151..1d5008b 100644
+--- a/fence/man/fenced.8
++++ b/fence/man/fenced.8
+@@ -139,9 +139,6 @@ a dash (\-) to skip default directories /sys/fs/gfs, /sys/fs/gfs2,
+ .B \-c
+ All nodes are in a clean state to start. Do no startup fencing.
+ .TP
+-.B \-s
+-Skip startup fencing of nodes with no defined fence methods.
+-.TP
+ .B \-q
+ Disable dbus signals.
+ .TP

@@ -1,0 +1,339 @@
+commit e4d17cb18e35f4d070cdbafe16cede304270e6cd
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Thu Aug 8 14:50:04 2013 -0500
+
+    gfs2_tool: Update /etc/mtab with metafs mounts, handle interrupts
+    
+    This patch gives libgfs2 the ability to add the metafs to the
+    /etc/mtab file, so that a "mount" will show it and "umount -a -tgfs2"
+    will unmount it. At the same time, it also catches interrupt signals
+    while gfs2_tool df is running, and if interrupted, it unmounts the
+    metafs.
+    
+    rhbz#996233
+
+diff --git a/gfs2/libgfs2/libgfs2.h b/gfs2/libgfs2/libgfs2.h
+index d5de337..375327f 100644
+--- a/gfs2/libgfs2/libgfs2.h
++++ b/gfs2/libgfs2/libgfs2.h
+@@ -673,6 +673,8 @@ extern int gfs2_query(int *setonabort, struct gfs2_options *opts,
+ 
+ /* misc.c */
+ 
++extern int metafs_interrupted;
++
+ extern int compute_heightsize(struct gfs2_sbd *sdp, uint64_t *heightsize,
+ 		uint32_t *maxheight, uint32_t bsize1, int diptrs, int inptrs);
+ extern int compute_constants(struct gfs2_sbd *sdp);
+diff --git a/gfs2/libgfs2/misc.c b/gfs2/libgfs2/misc.c
+index 31fc665..a6738b6 100644
+--- a/gfs2/libgfs2/misc.c
++++ b/gfs2/libgfs2/misc.c
+@@ -17,6 +17,7 @@
+ #include <sys/sysmacros.h>
+ #include <mntent.h>
+ #include <sys/time.h>
++#include <signal.h>
+ 
+ #include "libgfs2.h"
+ 
+@@ -25,6 +26,7 @@
+ #define DIV_RU(x, y) (((x) + (y) - 1) / (y))
+ 
+ static char sysfs_buf[PAGE_SIZE];
++int metafs_interrupted = 0;
+ 
+ int compute_heightsize(struct gfs2_sbd *sdp, uint64_t *heightsize,
+ 	uint32_t *maxheight, uint32_t bsize1, int diptrs, int inptrs)
+@@ -211,30 +213,46 @@ static int lock_for_admin(struct gfs2_sbd *sdp)
+ 	return 0;
+ }
+ 
+-
+-int mount_gfs2_meta(struct gfs2_sbd *sdp)
++static void remove_mtab_entry(struct gfs2_sbd *sdp)
+ {
+-	int ret;
+-
+-	memset(sdp->metafs_path, 0, PATH_MAX);
+-	snprintf(sdp->metafs_path, PATH_MAX - 1, "/tmp/.gfs2meta.XXXXXX");
++	FILE *mtab, *mtabnew;
++	struct mntent *mountent;
++	char mtab_tmpfn[PATH_MAX];
++	int error, fd;
++
++	mtab = setmntent("/etc/mtab", "rt");
++	if (mtab == NULL)
++		die("Couldn't open /etc/mtab for writing: %s\n",
++		    strerror(errno));
++	strcpy(mtab_tmpfn, "/etc/mtab.XXXXXX");
++	fd = mkstemp(mtab_tmpfn);
++	if (fd < 0)
++		die("Couldn't open temporary mtab file for writing: %s\n",
++		    strerror(errno));
+ 
+-	if(!mkdtemp(sdp->metafs_path))
+-		return -1;
++	mtabnew = fdopen(fd, "wt");
++	if (mtabnew == NULL)
++		die("Couldn't open %s for writing : %s\n", mtab_tmpfn,
++		    strerror(errno));
+ 
+-	ret = mount(sdp->path_name, sdp->metafs_path, "gfs2meta", 0, NULL);
+-	if (ret) {
+-		rmdir(sdp->metafs_path);
+-		return -1;
++	while ((mountent = getmntent(mtab)) != NULL) {
++		if (!strcmp(mountent->mnt_dir, sdp->metafs_path))
++			continue;
++		error = addmntent(mtabnew, mountent);
++		if (error)
++			die("Unable to add mount entry to mtab.\n");
+ 	}
+-	if (lock_for_admin(sdp))
+-		return -1;
+-	return 0;
++
++	endmntent(mtab);
++	fclose(mtabnew);
++	close(fd);
++	rename(mtab_tmpfn, "/etc/mtab");
+ }
+ 
+ void cleanup_metafs(struct gfs2_sbd *sdp)
+ {
+ 	int ret;
++	struct sigaction sa = {	.sa_handler = SIG_DFL };
+ 
+ 	if (sdp->metafs_fd <= 0)
+ 		return;
+@@ -247,6 +265,68 @@ void cleanup_metafs(struct gfs2_sbd *sdp)
+ 			sdp->metafs_path, strerror(errno));
+ 	else
+ 		rmdir(sdp->metafs_path);
++	sigaction(SIGINT, &sa, NULL);
++	sigaction(SIGILL, &sa, NULL);
++	sigaction(SIGTERM, &sa, NULL);
++	sigaction(SIGHUP, &sa, NULL);
++	sigaction(SIGABRT, &sa, NULL);
++	sigaction(SIGSEGV, &sa, NULL);
++	sigaction(SIGCONT, &sa, NULL);
++	sigaction(SIGUSR1, &sa, NULL);
++	sigaction(SIGUSR2, &sa, NULL);
++	metafs_interrupted = 0;
++	remove_mtab_entry(sdp);
++}
++
++static void sighandler(int error)
++{
++	metafs_interrupted = 1;
++}
++
++int mount_gfs2_meta(struct gfs2_sbd *sdp)
++{
++	int ret;
++	struct mntent ment;
++	char mnt_type[5] = "gfs2";
++	char mnt_opts[9] = "gfs2meta";
++	FILE *mtab;
++	struct sigaction sa = {	.sa_handler = &sighandler };
++
++	memset(sdp->metafs_path, 0, PATH_MAX);
++	snprintf(sdp->metafs_path, PATH_MAX - 1, "/tmp/.gfs2meta.XXXXXX");
++
++	if(!mkdtemp(sdp->metafs_path))
++		return -1;
++
++	mtab = setmntent("/etc/mtab", "at");
++	if (mtab == NULL) {
++		rmdir(sdp->metafs_path);
++		return -1;
++	}
++
++	sigaction(SIGINT, &sa, NULL);
++	sigaction(SIGILL, &sa, NULL);
++	sigaction(SIGTERM, &sa, NULL);
++	sigaction(SIGHUP, &sa, NULL);
++	sigaction(SIGABRT, &sa, NULL);
++	sigaction(SIGSEGV, &sa, NULL);
++	sigaction(SIGCONT, &sa, NULL);
++	sigaction(SIGUSR1, &sa, NULL);
++	sigaction(SIGUSR2, &sa, NULL);
++	ret = mount(sdp->path_name, sdp->metafs_path, "gfs2meta", 0, NULL);
++	if (ret) {
++		rmdir(sdp->metafs_path);
++		return -1;
++	}
++	ment.mnt_fsname = sdp->path_name;
++	ment.mnt_dir = sdp->metafs_path;
++	ment.mnt_type = mnt_type;
++	ment.mnt_opts = mnt_opts;
++	addmntent(mtab, &ment);
++	endmntent(mtab);
++	if (lock_for_admin(sdp))
++		return -1;
++	return 0;
+ }
+ 
+ static char *__get_sysfs(const char *fsname, const char *filename)
+diff --git a/gfs2/mkfs/main_grow.c b/gfs2/mkfs/main_grow.c
+index 8839953..831239e 100644
+--- a/gfs2/mkfs/main_grow.c
++++ b/gfs2/mkfs/main_grow.c
+@@ -373,6 +373,8 @@ main_grow(int argc, char *argv[])
+ 		/* we're only going to write out new RG information after   */
+ 		/* the existing RGs, and only write to the index at EOF.    */
+ 		ri_update(sdp, rindex_fd, &rgcount, &sane);
++		if (metafs_interrupted)
++			goto out;
+ 		fssize = filesystem_size(sdp);
+ 		if (!sdp->rgtree.osi_node) {
+ 			log_err(_("Error: No resource groups found.\n"));
+@@ -395,9 +397,15 @@ main_grow(int argc, char *argv[])
+ 		} else {
+ 			int old_rg_count;
+ 
++			if (metafs_interrupted)
++				goto out;
+ 			compute_rgrp_layout(sdp, &sdp->rgtree, TRUE);
++			if (metafs_interrupted)
++				goto out;
+ 			print_info(sdp);
+ 			initialize_new_portion(sdp, &old_rg_count);
++			if (metafs_interrupted)
++				goto out;
+ 			fix_rindex(sdp, rindex_fd, old_rg_count);
+ 		}
+ 	out:
+@@ -409,6 +417,7 @@ main_grow(int argc, char *argv[])
+ 	}
+ 	close(sdp->path_fd);
+ 	sync();
+-	log_notice( _("gfs2_grow complete.\n"));
++	if (!metafs_interrupted)
++		log_notice( _("gfs2_grow complete.\n"));
+ 	exit(error);
+ }
+diff --git a/gfs2/mkfs/main_jadd.c b/gfs2/mkfs/main_jadd.c
+index be13271..3e44fca 100644
+--- a/gfs2/mkfs/main_jadd.c
++++ b/gfs2/mkfs/main_jadd.c
+@@ -523,6 +523,10 @@ void main_jadd(int argc, char *argv[])
+ 	for (sdp->md.journals = sdp->orig_journals; 
+ 	     sdp->md.journals < total;
+ 	     sdp->md.journals++) {
++		if (metafs_interrupted) {
++			cleanup_metafs(&sbd);
++			exit(130);
++		}
+ 		add_ir(sdp);
+ 		add_sc(sdp);
+ 		add_qc(sdp);
+diff --git a/gfs2/quota/check.c b/gfs2/quota/check.c
+index 81a4364..2208d2a 100644
+--- a/gfs2/quota/check.c
++++ b/gfs2/quota/check.c
+@@ -247,6 +247,8 @@ read_quota_file(struct gfs2_sbd *sdp, commandline_t *comline,
+ 			uint64_t end = fe->fe_logical + fe->fe_length, val_off;
+ 			unsigned int v_off;
+ 
++			if (metafs_interrupted)
++				break;
+ 			end = end > quota_file_size ? quota_file_size : end;
+ 			/* we only need to get the value fields, not the whole quota 
+ 			 * This also works when struct gfs2_quota straddle page 
+@@ -497,6 +499,8 @@ set_list(struct gfs2_sbd *sdp, commandline_t *comline, int user,
+ 	}
+ 
+ 	for (tmp = list->next; tmp != list; tmp = tmp->next) {
++		if (metafs_interrupted)
++			goto out;
+ 		v = osi_list_entry(tmp, values_t, v_list);
+ 
+ 		offset = (2 * (uint64_t)v->v_id + ((user) ? 0 : 1)) *
+diff --git a/gfs2/quota/main.c b/gfs2/quota/main.c
+index 0625b7d..d9f56ab 100644
+--- a/gfs2/quota/main.c
++++ b/gfs2/quota/main.c
+@@ -401,18 +401,20 @@ do_reset(struct gfs2_sbd *sdp, commandline_t *comline)
+ 		    strerror(errno));
+ 	}
+ 
+-	read_quota_internal(fd, 0, GQ_ID_USER, &q);
+-	write_quota_internal(fd, 0, GQ_ID_USER, &q);
++	if (!metafs_interrupted) {
++		read_quota_internal(fd, 0, GQ_ID_USER, &q);
++		write_quota_internal(fd, 0, GQ_ID_USER, &q);
+ 
+-	read_quota_internal(fd, 0, GQ_ID_GROUP, &q);
+-	write_quota_internal(fd, 0, GQ_ID_GROUP, &q);
++		read_quota_internal(fd, 0, GQ_ID_GROUP, &q);
++		write_quota_internal(fd, 0, GQ_ID_GROUP, &q);
+ 
+-	/* truncate the quota file such that only the first
+-	 * two quotas(uid=0 and gid=0) remain.
+-	 */
+-	if (ftruncate(fd, (sizeof(struct gfs2_quota)) * 2))
+-		die("couldn't truncate quota file %s\n", strerror(errno));
+-	
++		/* truncate the quota file such that only the first
++		 * two quotas(uid=0 and gid=0) remain.
++		 */
++		if (ftruncate(fd, (sizeof(struct gfs2_quota)) * 2))
++			die("couldn't truncate quota file %s\n",
++			    strerror(errno));
++	}
+ 	close(fd);
+ 	close(sdp->metafs_fd);
+ 	cleanup_metafs(sdp);
+@@ -508,6 +510,8 @@ do_list(struct gfs2_sbd *sdp, commandline_t *comline)
+ 			struct fiemap_extent *fe = &fmap2->fm_extents[i];
+ 			uint64_t end = fe->fe_logical + fe->fe_length;
+ 
++			if (metafs_interrupted)
++				goto fmap2_free;
+ 			end = end > quota_file_size ? quota_file_size : end;
+ 			startid = DIV_RU(fe->fe_logical, sizeof(struct gfs2_quota));
+ 			if (startid % 2 != pass)
+@@ -582,7 +586,7 @@ do_get_one(struct gfs2_sbd *sdp, commandline_t *comline, char *filesystem)
+ 	strcat(quota_file, "/quota");
+ 
+ 	fd = open(quota_file, O_RDONLY);
+-	if (fd < 0) {
++	if (fd < 0 || metafs_interrupted) {
+ 		close(sdp->metafs_fd);
+ 		cleanup_metafs(sdp);
+ 		die("can't open file %s: %s\n", quota_file,
+@@ -756,7 +760,7 @@ do_set(struct gfs2_sbd *sdp, commandline_t *comline)
+ 	strcat(quota_file, "/quota");
+ 
+ 	fd = open(quota_file, O_RDWR);
+-	if (fd < 0) {
++	if (fd < 0 || metafs_interrupted) {
+ 		close(sdp->metafs_fd);
+ 		cleanup_metafs(sdp);
+ 		die("can't open file %s: %s\n", quota_file,
+diff --git a/gfs2/tool/misc.c b/gfs2/tool/misc.c
+index 359567c..37c81cd 100644
+--- a/gfs2/tool/misc.c
++++ b/gfs2/tool/misc.c
+@@ -276,11 +276,19 @@ void print_journals(int argc, char **argv)
+ 
+ 	sprintf(jindex_name, "%s/jindex", sbd.metafs_path);
+ 	jindex = opendir(jindex_name);
++	if (metafs_interrupted) {
++		cleanup_metafs(&sbd);
++		exit(130);
++	}
+ 	if (!jindex) {
+ 		die( _("Can't open %s\n"), jindex_name);
+ 	} else {
+ 		jcount = 0;
+ 		while ((journal = readdir(jindex))) {
++			if (metafs_interrupted) {
++				cleanup_metafs(&sbd);
++				exit(130);
++			}
+ 			if (journal->d_name[0] == '.')
+ 				continue;
+ 			sprintf(jname, "%s/%s", jindex_name, journal->d_name);

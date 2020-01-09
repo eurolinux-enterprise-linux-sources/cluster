@@ -1,0 +1,206 @@
+commit 08b9756cb840be6174af0eb962b17a048316d154
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Wed Aug 10 10:21:00 2011 -0500
+
+    libgfs2: eliminate gfs1_readi in favor of gfs2_readi
+    
+    This patch eliminates function gfs1_readi because it's nearly
+    identical to gfs2_readi.  The gfs1-specific bits have been made
+    generic in gfs2_readi based on the sdp->gfs1 setting.
+    
+    rhbz#675723
+
+diff --git a/gfs2/edit/extended.c b/gfs2/edit/extended.c
+index 366dfc6..6326ec3 100644
+--- a/gfs2/edit/extended.c
++++ b/gfs2/edit/extended.c
+@@ -515,12 +515,8 @@ static int parse_rindex(struct gfs2_inode *dip, int print_rindex)
+ 
+ 		roff = print_entry_ndx * sizeof(struct gfs2_rindex);
+ 
+-		if (sbd.gfs1)
+-			error = gfs1_readi(dip, (void *)&rbuf, roff,
+-					   sizeof(struct gfs2_rindex));
+-		else
+-			error = gfs2_readi(dip, (void *)&rbuf, roff,
+-					   sizeof(struct gfs2_rindex));
++		error = gfs2_readi(dip, (void *)&rbuf, roff,
++				   sizeof(struct gfs2_rindex));
+ 		if (!error) /* end of file */
+ 			break;
+ 		gfs2_rindex_in(&ri, rbuf);
+diff --git a/gfs2/libgfs2/fs_ops.c b/gfs2/libgfs2/fs_ops.c
+index 3d57b97..6ffee9d 100644
+--- a/gfs2/libgfs2/fs_ops.c
++++ b/gfs2/libgfs2/fs_ops.c
+@@ -508,6 +508,7 @@ int gfs2_readi(struct gfs2_inode *ip, void *buf,
+ 	unsigned int amount;
+ 	int not_new = 0;
+ 	int isdir = !!(S_ISDIR(ip->i_di.di_mode));
++	int journaled = ip->i_di.di_flags & GFS2_DIF_JDATA;
+ 	int copied = 0;
+ 
+ 	if (offset >= ip->i_di.di_size)
+@@ -519,7 +520,7 @@ int gfs2_readi(struct gfs2_inode *ip, void *buf,
+ 	if (!size)
+ 		return 0;
+ 
+-	if (isdir) {
++	if ((sdp->gfs1 && journaled) || (!sdp->gfs1 && isdir)) {
+ 		lblock = offset;
+ 		o = lblock % sdp->sd_jbsize;
+ 		lblock /= sdp->sd_jbsize;
+@@ -530,7 +531,7 @@ int gfs2_readi(struct gfs2_inode *ip, void *buf,
+ 
+ 	if (inode_is_stuffed(ip))
+ 		o += sizeof(struct gfs2_dinode);
+-	else if (isdir)
++	else if ((sdp->gfs1 && journaled) || (!sdp->gfs1 && isdir))
+ 		o += sizeof(struct gfs2_meta_header);
+ 
+ 	while (copied < size) {
+@@ -538,9 +539,14 @@ int gfs2_readi(struct gfs2_inode *ip, void *buf,
+ 		if (amount > sdp->bsize - o)
+ 			amount = sdp->bsize - o;
+ 
+-		if (!extlen)
+-			block_map(ip, lblock, &not_new, &dblock, &extlen,
+-				  FALSE);
++		if (!extlen) {
++			if (sdp->gfs1)
++				gfs1_block_map(ip, lblock, &not_new, &dblock,
++					       &extlen, FALSE);
++			else
++				block_map(ip, lblock, &not_new, &dblock,
++					  &extlen, FALSE);
++		}
+ 
+ 		if (dblock) {
+ 			if (dblock == ip->i_di.di_num.no_addr)
+@@ -559,7 +565,10 @@ int gfs2_readi(struct gfs2_inode *ip, void *buf,
+ 		copied += amount;
+ 		lblock++;
+ 
+-		o = (isdir) ? sizeof(struct gfs2_meta_header) : 0;
++		if (sdp->gfs1)
++			o = (journaled) ? sizeof(struct gfs2_meta_header) : 0;
++		else
++			o = (isdir) ? sizeof(struct gfs2_meta_header) : 0;
+ 	}
+ 
+ 	return copied;
+diff --git a/gfs2/libgfs2/gfs1.c b/gfs2/libgfs2/gfs1.c
+index 5018334..2bdf57f 100644
+--- a/gfs2/libgfs2/gfs1.c
++++ b/gfs2/libgfs2/gfs1.c
+@@ -154,72 +154,6 @@ void gfs1_block_map(struct gfs2_inode *ip, uint64_t lblock, int *new,
+ 	free(mp);
+ }
+ 
+-int gfs1_readi(struct gfs2_inode *ip, void *bufin,
+-	       uint64_t offset, unsigned int size)
+-{
+-	struct gfs2_sbd *sdp = ip->i_sbd;
+-	struct gfs2_buffer_head *bh;
+-	uint64_t lblock, dblock = 0;
+-	uint32_t extlen = 0;
+-	unsigned int amount;
+-	int not_new = 0;
+-	int journaled = fs_is_jdata(ip);
+-	int copied = 0;
+-	char *buf = bufin;
+-
+-	if (offset >= ip->i_di.di_size)
+-		return 0;
+-
+-	if ((offset + size) > ip->i_di.di_size)
+-		size = ip->i_di.di_size - offset;
+-
+-	if (!size)
+-		return 0;
+-
+-	if (journaled) {
+-		lblock = offset / sdp->sd_jbsize;
+-		offset %= sdp->sd_jbsize;
+-	} else {
+-		lblock = offset >> sdp->sd_sb.sb_bsize_shift;
+-		offset &= sdp->sd_sb.sb_bsize - 1;
+-	}
+-
+-	if (!ip->i_di.di_height) /* stuffed */
+-		offset += sizeof(struct gfs_dinode);
+-	else if (journaled)
+-		offset += sizeof(struct gfs2_meta_header);
+-
+-	while (copied < size) {
+-		amount = size - copied;
+-		if (amount > sdp->bsize - offset)
+-			amount = sdp->bsize - offset;
+-
+-		if (!extlen)
+-			gfs1_block_map(ip, lblock, &not_new, &dblock,
+-				       &extlen, FALSE);
+-
+-		if (dblock) {
+-			bh = bread(sdp, dblock);
+-			dblock++;
+-			extlen--;
+-		} else
+-			bh = NULL;
+-
+-
+-		if (bh) {
+-			memcpy(buf+copied, bh->b_data + offset, amount);
+-			brelse(bh);
+-		} else
+-			memset(buf+copied, 0, amount);
+-		copied += amount;
+-		lblock++;
+-
+-		offset = (journaled) ? sizeof(struct gfs2_meta_header) : 0;
+-	}
+-
+-	return copied;
+-}
+-
+ /**
+  * gfs1_rindex_read - read in the rg index file
+  *                  Stolen from libgfs2/super.c, but modified to handle gfs1.
+@@ -244,7 +178,7 @@ int gfs1_rindex_read(struct gfs2_sbd *sdp, int fd, int *count1)
+ 		if (fd > 0)
+ 			error = read(fd, &buf, sizeof(struct gfs2_rindex));
+ 		else
+-			error = gfs1_readi(sdp->md.riinode, (char *)&buf,
++			error = gfs2_readi(sdp->md.riinode, (char *)&buf,
+ 					   (rg * sizeof(struct gfs2_rindex)),
+ 					   sizeof(struct gfs2_rindex));
+ 		if (!error)
+diff --git a/gfs2/libgfs2/libgfs2.h b/gfs2/libgfs2/libgfs2.h
+index 9bae01b..cc71bd3 100644
+--- a/gfs2/libgfs2/libgfs2.h
++++ b/gfs2/libgfs2/libgfs2.h
+@@ -665,8 +665,6 @@ extern void gfs1_lookup_block(struct gfs2_inode *ip,
+ 			      int create, int *new, uint64_t *block);
+ extern void gfs1_block_map(struct gfs2_inode *ip, uint64_t lblock, int *new,
+ 			   uint64_t *dblock, uint32_t *extlen, int prealloc);
+-extern int gfs1_readi(struct gfs2_inode *ip, void *buf, uint64_t offset,
+-		      unsigned int size);
+ extern int gfs1_rindex_read(struct gfs2_sbd *sdp, int fd, int *count1);
+ extern int gfs1_ri_update(struct gfs2_sbd *sdp, int fd, int *rgcount, int quiet);
+ extern struct gfs2_inode *gfs_inode_get(struct gfs2_sbd *sdp,
+diff --git a/gfs2/libgfs2/super.c b/gfs2/libgfs2/super.c
+index d902ba2..0fac740 100644
+--- a/gfs2/libgfs2/super.c
++++ b/gfs2/libgfs2/super.c
+@@ -158,11 +158,6 @@ int rindex_read(struct gfs2_sbd *sdp, int fd, int *count1, int *sane)
+ 	for (rg = 0; ; rg++) {
+ 		if (fd > 0)
+ 			error = read(fd, &buf, sizeof(struct gfs2_rindex));
+-		else if (sdp->gfs1)
+-			error = gfs1_readi(sdp->md.riinode,
+-					   (char *)&buf.bufgfs1,
+-					   rg * sizeof(struct gfs2_rindex),
+-					   sizeof(struct gfs2_rindex));
+ 		else
+ 			error = gfs2_readi(sdp->md.riinode,
+ 					   (char *)&buf.bufgfs2,

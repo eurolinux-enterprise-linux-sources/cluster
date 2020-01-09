@@ -1,0 +1,56 @@
+commit 7933984ea9c3cd08e1a68a52f098f55b05ab0924
+Author: Abhi Das <adas@redhat.com>
+Date:   Tue Dec 23 13:37:48 2014 -0600
+
+    gfs2_convert: use correct i_goal values instead of zeros for inodes
+    
+    This patch sets the inode i_goal_data and i_goal_meta values to the
+    last allocated block for that inode instead of setting it to zero
+    as it did before.
+    
+    Resolves: rhbz#1149516
+    Signed-off-by: Abhi Das <adas@redhat.com>
+
+diff --git a/gfs2/convert/gfs2_convert.c b/gfs2/convert/gfs2_convert.c
+index bf3f49b..ec7f56c 100644
+--- a/gfs2/convert/gfs2_convert.c
++++ b/gfs2/convert/gfs2_convert.c
+@@ -652,8 +652,10 @@ static int fix_ind_reg_or_dir(struct gfs2_sbd *sbp, struct gfs2_inode *ip, uint3
+ 	mp_gfs1_to_gfs2(sbp, di_height, gfs2_hgt, &blk->mp, &gfs2mp);
+ 	memcpy(&blk->mp, &gfs2mp, sizeof(struct metapath));
+ 	blk->height -= di_height - gfs2_hgt;
+-	if (len)
++	if (len) {
+ 		fix_metatree(sbp, ip, blk, ptr1, len);
++		ip->i_di.di_goal_data = ip->i_di.di_goal_meta = be64_to_cpu(*ptr2);
++	}
+ 
+ 	return 0;
+ }
+@@ -930,7 +932,7 @@ static int adjust_inode(struct gfs2_sbd *sbp, struct gfs2_buffer_head *bh)
+ 		inode->i_di.di_mode |= S_IFSOCK;
+ 		break;
+ 	}
+-			
++
+ 	/* ----------------------------------------------------------- */
+ 	/* gfs2 inodes are slightly different from gfs1 inodes in that */
+ 	/* di_goal_meta has shifted locations and di_goal_data has     */
+@@ -956,7 +958,7 @@ static int adjust_inode(struct gfs2_sbd *sbp, struct gfs2_buffer_head *bh)
+ 		inode->i_di.di_goal_data = 0; /* make sure the upper 32b are 0 */
+ 		inode->i_di.di_goal_data = gfs1_dinode_struct->di_goal_dblk;
+ 		inode->i_di.di_generation = 0;
+-		
++
+ 		if (adjust_indirect_blocks(sbp, inode))
+ 			return -1;
+ 		/* Check for cdpns */
+@@ -972,7 +974,7 @@ static int adjust_inode(struct gfs2_sbd *sbp, struct gfs2_buffer_head *bh)
+ 				return -1;
+ 		}
+ 	}
+-	
++
+ 	bmodified(inode->i_bh);
+ 	inode_put(&inode); /* does gfs2_dinode_out if modified */
+ 	sbp->md.next_inum++; /* update inode count */

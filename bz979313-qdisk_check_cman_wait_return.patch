@@ -1,0 +1,21 @@
+--- a/cman/qdisk/main.c	
++++ a/cman/qdisk/main.c	
+@@ -1264,10 +1264,16 @@ quorum_loop(qd_ctx *ctx, node_info_t *ni, int max)
+ 		} else {
+ 			error_cycles = 0;
+ 		}
+-		
++
+ 		/* Could hit a watchdog timer here if we wanted to */
+ 		if (_running) {
+-			cman_wait(ctx->qc_cman_user, &sleeptime);
++			if (cman_wait(ctx->qc_cman_user, &sleeptime)) {
++				logt_print(LOG_ERR, "cman_dispatch: %s\n",
++				       strerror(errno));
++				logt_print(LOG_ERR,
++				       "Halting qdisk operations\n");
++				return -1;
++			}
+ 		}
+ 	}
+ 

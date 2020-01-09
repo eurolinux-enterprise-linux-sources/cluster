@@ -1,0 +1,71 @@
+commit e56cd5e56f21f4b9ee6c383cc5beaac54c4f60b4
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Mon Jul 15 14:11:34 2013 -0500
+
+    fsck.gfs2: don't check newly created lost+found in pass2
+    
+    This patch checks whether lost+found was created during the run
+    and if so, it skips pass2 directory checking for lost+found.
+    The reason we need to do this is because when lost+found is created,
+    it sets the directory linkage count to 1. If pass2 checks the
+    directory, it will add it a second time because it checks it like
+    every other normal directory. Therefore, the linkage counts get off.
+    Plus, it's a waste of time to check it, since we just built it.
+    
+    rhbz#984085
+
+diff --git a/gfs2/fsck/fsck.h b/gfs2/fsck/fsck.h
+index cc86268..ddabf79 100644
+--- a/gfs2/fsck/fsck.h
++++ b/gfs2/fsck/fsck.h
+@@ -124,6 +124,7 @@ struct dir_info *dirtree_insert(struct gfs2_inum inum);
+ 
+ extern struct gfs2_options opts;
+ extern struct gfs2_inode *lf_dip; /* Lost and found directory inode */
++extern int lf_was_created;
+ extern struct gfs2_bmap *bl;
+ extern uint64_t last_fs_block, last_reported_block;
+ extern int64_t last_reported_fblock;
+diff --git a/gfs2/fsck/lost_n_found.c b/gfs2/fsck/lost_n_found.c
+index 388787d..c8265a2 100644
+--- a/gfs2/fsck/lost_n_found.c
++++ b/gfs2/fsck/lost_n_found.c
+@@ -130,6 +130,7 @@ void make_sure_lf_exists(struct gfs2_inode *ip)
+ 
+ 	q = block_type(lf_dip->i_di.di_num.no_addr);
+ 	if (q != gfs2_inode_dir) {
++		lf_was_created = 1;
+ 		/* This is a new lost+found directory, so set its block type
+ 		   and increment link counts for the directories */
+ 		/* FIXME: i'd feel better about this if fs_mkdir returned
+diff --git a/gfs2/fsck/main.c b/gfs2/fsck/main.c
+index ec44c83..ecf384f 100644
+--- a/gfs2/fsck/main.c
++++ b/gfs2/fsck/main.c
+@@ -20,6 +20,7 @@
+ 
+ struct gfs2_options opts = {0};
+ struct gfs2_inode *lf_dip = NULL; /* Lost and found directory inode */
++int lf_was_created = 0;
+ struct gfs2_bmap *bl = NULL;
+ uint64_t last_fs_block, last_reported_block = -1;
+ int64_t last_reported_fblock = -1000000;
+diff --git a/gfs2/fsck/pass2.c b/gfs2/fsck/pass2.c
+index 78bc34b..c243a5a 100644
+--- a/gfs2/fsck/pass2.c
++++ b/gfs2/fsck/pass2.c
+@@ -1676,6 +1676,14 @@ int pass2(struct gfs2_sbd *sdp)
+ 		if (q != gfs2_inode_dir)
+ 			continue;
+ 
++		/* If we created lost+found, its links should have been
++		   properly adjusted, so don't check it. */
++		if (lf_was_created &&
++		    (dirblk == lf_dip->i_di.di_num.no_addr)) {
++			log_debug(_("Pass2 skipping the new lost+found.\n"));
++			continue;
++		}
++
+ 		log_debug( _("Checking directory inode at block %llu (0x%llx)\n"),
+ 			  (unsigned long long)dirblk, (unsigned long long)dirblk);
+ 

@@ -1,0 +1,22 @@
+commit 5bdd9f26b7664368a058dad1a76a7b668dd83632
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Sat Sep 3 11:15:22 2011 +0200
+
+    config: invalidate ccs_update_schema cache if we received traps/signals
+    
+    Resolves: rhbz#733424
+    
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/config/tools/xml/ccs_update_schema.in b/config/tools/xml/ccs_update_schema.in
+index 03dbb68..d082ed3 100644
+--- a/config/tools/xml/ccs_update_schema.in
++++ b/config/tools/xml/ccs_update_schema.in
+@@ -64,6 +64,7 @@ export tmpdir
+ 
+ # need to be careful (might have to mask traps on exit)
+ cleanup() {
++	[ "$1" != "0" ] && rm -f $vardir/*.cache $vardir/*.hash
+ 	[ -n "$tmpdir" ] && [ -d "$tmpdir" ] && rm -rf "$tmpdir"
+ 	rm -f $vardir/rng_update.lock
+ 	exit $1

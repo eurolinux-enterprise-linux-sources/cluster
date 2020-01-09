@@ -1,0 +1,28 @@
+commit 5a2bb5b4e5e57cb66f318173203b4acbc26c8f50
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Thu Feb 16 08:23:04 2012 -0600
+
+    gfs2_edit restoremeta: sync changes on a regular basis
+    
+    This patch calls fsync on a regular basis to commit restored
+    GFS2 metadata to media. This is primarily to make it more user-
+    friendly. Without it, large metadata sets appear to restore very
+    quickly, then hang for a very long time while the buffers are all
+    being synced to disk. This prevents it from getting too far ahead.
+    So it will seem to restore more slowly, but not hang at the end.
+    
+    rhbz#749864
+
+diff --git a/gfs2/edit/savemeta.c b/gfs2/edit/savemeta.c
+index 389db99..84499d0 100644
+--- a/gfs2/edit/savemeta.c
++++ b/gfs2/edit/savemeta.c
+@@ -945,6 +945,8 @@ static int restore_data(int fd, gzFile *gzin_fd, int printblocksonly,
+ 				exit(-1);
+ 			}
+ 			writes++;
++			if (writes % 1000 == 0)
++				fsync(fd);
+ 		}
+ 		blks_saved++;
+ 	}

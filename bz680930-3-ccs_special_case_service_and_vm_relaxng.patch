@@ -1,0 +1,32 @@
+commit c4e8a5cd840550bb3457eed25f167afc2531ae12
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Mon Jul 11 11:32:43 2011 +0200
+
+    ccs_update_schema: service.sh and vm.sh have to be specialcased
+    
+    both ras have a special set of references within cluster.rng.in.head.
+    
+    We need to make sure they exist or use stubs
+    
+    Resolves: rhbz#680930
+    
+    Reviewed-by: Lon Hohberger <lhh@redhat.com>
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/config/tools/xml/ccs_update_schema.in b/config/tools/xml/ccs_update_schema.in
+index b01cd94..e149896 100644
+--- a/config/tools/xml/ccs_update_schema.in
++++ b/config/tools/xml/ccs_update_schema.in
+@@ -159,6 +159,12 @@ generate_ras() {
+ 		fi
+ 	done
+ 
++	for i in service.sh vm.sh; do
++		if [ ! -x "$rasdir/$i" ]; then
++			doras_stub=yes
++		fi
++	done
++
+ 	[ "$doras_stub" = yes ] && create_ras_stubs && return 0
+ 
+ 	lecho " ras: looking for agents"

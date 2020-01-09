@@ -1,0 +1,99 @@
+commit 4dbb6e5cca30acbcb8fb9d715c6008c8868c5fa7
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Thu Sep 8 11:40:17 2011 +0200
+
+    cman: default to 2 different mcast addresses in RRP mode and set rrp_problem_count_threshold
+    
+    Resolves: rhbz#735912
+    
+    Acked-by: Jan Friesse <jfriesse@redhat.com>
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/cman/daemon/cman-preconfig.c b/cman/daemon/cman-preconfig.c
+index 16d89e5..7d60226 100644
+--- a/cman/daemon/cman-preconfig.c
++++ b/cman/daemon/cman-preconfig.c
+@@ -408,13 +408,14 @@ static uint16_t generate_cluster_id(char *name)
+ 	return value & 0xFFFF;
+ }
+ 
+-static char *default_mcast(char *node, uint16_t clusterid)
++static char *default_mcast(char *node, int altiface)
+ {
+         struct addrinfo *ainfo;
+         struct addrinfo ahints;
+ 	int ret;
+ 	int family;
+ 	static char addr[132];
++	uint16_t clusterid = cluster_id + altiface;
+ 
+         memset(&ahints, 0, sizeof(ahints));
+ 
+@@ -709,7 +710,7 @@ static int get_nodename(struct objdb_iface_ver0 *objdb)
+ 		}
+ 
+ 		if (!mcast_name) {
+-			mcast_name = default_mcast(nodename, cluster_id);
++			mcast_name = default_mcast(nodename, PRIMARY_IFACE);
+ 
+ 		}
+ 		if (!mcast_name)
+@@ -793,7 +794,7 @@ static int get_nodename(struct objdb_iface_ver0 *objdb)
+ 		objdb_get_int(objdb, alt_object, "ttl", &altttl, ttl);
+ 
+ 		if (objdb_get_string(objdb, alt_object, "mcast", &mcast)) {
+-			mcast = mcast_name;
++			mcast = default_mcast(nodename, ALT_IFACE);
+ 		}
+ 
+ 		if (add_ifaddr(objdb, mcast, node, portnum, altttl,
+@@ -1007,6 +1008,13 @@ static void add_cman_overrides(struct objdb_iface_ver0 *objdb)
+ 			}
+ 		}
+ 
++		if (objdb_get_string(objdb, object_handle, "rrp_problem_count_threshold", &value)) {
++			if (num_interfaces > 1) {
++				objdb->object_key_create_typed(object_handle, "rrp_problem_count_threshold",
++							       "3", 2, OBJDB_VALUETYPE_STRING);
++			}
++		}
++
+ 		if (objdb_get_string(objdb, object_handle, "secauth", &value)) {
+ 			sprintf(tmp, "%d", 1);
+ 			objdb->object_key_create_typed(object_handle, "secauth",
+@@ -1152,7 +1160,7 @@ static int set_noccs_defaults(struct objdb_iface_ver0 *objdb)
+ 	num_nodenames = 1;
+ 
+ 	if (!mcast_name) {
+-		mcast_name = default_mcast(nodename, cluster_id);
++		mcast_name = default_mcast(nodename, PRIMARY_IFACE);
+ 	}
+ 
+ 	/* This will increase as nodes join the cluster */
+diff --git a/config/tools/xml/cluster.rng.in.head b/config/tools/xml/cluster.rng.in.head
+index 1afa9e8..e6e4633 100644
+--- a/config/tools/xml/cluster.rng.in.head
++++ b/config/tools/xml/cluster.rng.in.head
+@@ -257,7 +257,7 @@ To validate your cluster.conf against this schema, run:
+       rha:sample="5"/>
+    </optional>
+    <!-- FIXME: The following description was adapted from the man page.
+-   It may be tool long for the schema docuement. Consider cutting text
++   It may be tool long for the schema document. Consider cutting text
+    after the second sentence and referring the reader to the openais.conf
+    man page. -->
+    <optional>
+@@ -275,6 +275,13 @@ To validate your cluster.conf against this schema, run:
+         chosen." rha:sample="active"/>
+    </optional>
+    <optional>
++    <attribute name="rrp_problem_count_threshold"
++	rha:description="This specifies the number of times a problem is detected
++        with a link before setting the link faulty.  Once a link is set faulty, no
++        more data is transmitted upon it. Corosync default is 10, cman default is 3"
++        rha:default="3" rha:sample="5"/>
++   </optional>
++   <optional>
+     <attribute name="secauth" rha:description="This attribute specifies
+        that HMAC/SHA1 authentication should be used to authenticate all
+        messages. It further specifies that all data should be encrypted

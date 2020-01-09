@@ -1,0 +1,478 @@
+commit f7b8a81a21d93398873fd96dd3329f2e0b120e5b
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Tue Apr 2 10:39:26 2013 -0700
+
+    fsck.gfs2: Consistent naming of struct duptree variables
+    
+    There were several places in the fsck.gfs2 code that referenced
+    variables of type struct duptree, but sometimes they were called
+    dt, d, b or even data. This patch achieves a level of consistency
+    and calls them all dt. This helps readability: when you see a
+    variable dt, you know it's a struct duptree.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/fsck.h b/gfs2/fsck/fsck.h
+index e4f84c1..87d0a04 100644
+--- a/gfs2/fsck/fsck.h
++++ b/gfs2/fsck/fsck.h
+@@ -117,7 +117,7 @@ extern int fsck_query(const char *format, ...)
+ 	__attribute__((format(printf,1,2)));
+ extern struct dir_info *dirtree_find(uint64_t block);
+ extern void dup_listent_delete(struct inode_with_dups *id);
+-extern void dup_delete(struct duptree *b);
++extern void dup_delete(struct duptree *dt);
+ extern void dirtree_delete(struct dir_info *b);
+ 
+ /* FIXME: Hack to get this going for pass2 - this should be pulled out
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index 39c39ce..c1c7bfb 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -177,14 +177,14 @@ struct duptree *dupfind(uint64_t block)
+ 	struct osi_node *node = dup_blocks.osi_node;
+ 
+ 	while (node) {
+-		struct duptree *data = (struct duptree *)node;
++		struct duptree *dt = (struct duptree *)node;
+ 
+-		if (block < data->block)
++		if (block < dt->block)
+ 			node = node->osi_left;
+-		else if (block > data->block)
++		else if (block > dt->block)
+ 			node = node->osi_right;
+ 		else
+-			return data;
++			return dt;
+ 	}
+ 	return NULL;
+ }
+@@ -953,15 +953,15 @@ int delete_block(struct gfs2_inode *ip, uint64_t block,
+  */
+ int find_remove_dup(struct gfs2_inode *ip, uint64_t block, const char *btype)
+ {
+-	struct duptree *d;
++	struct duptree *dt;
+ 	struct inode_with_dups *id;
+ 
+-	d = dupfind(block);
+-	if (!d)
++	dt = dupfind(block);
++	if (!dt)
+ 		return 0;
+ 
+ 	/* remove the inode reference id structure for this reference. */
+-	id = find_dup_ref_inode(d, ip);
++	id = find_dup_ref_inode(dt, ip);
+ 	if (!id)
+ 		return 0;
+ 
+@@ -971,14 +971,14 @@ int find_remove_dup(struct gfs2_inode *ip, uint64_t block, const char *btype)
+ 		 (unsigned long long)block, (unsigned long long)block,
+ 		 btype, (unsigned long long)ip->i_di.di_num.no_addr,
+ 		 (unsigned long long)ip->i_di.di_num.no_addr);
+-	d->refs--; /* one less reference */
+-	if (d->refs == 1) {
++	dt->refs--; /* one less reference */
++	if (dt->refs == 1) {
+ 		log_info( _("This leaves only one reference: it's "
+ 			    "no longer a duplicate.\n"));
+-		dup_delete(d); /* not duplicate now */
++		dup_delete(dt); /* not duplicate now */
+ 	} else
+ 		log_info( _("%d block reference(s) remain.\n"),
+-			  d->refs);
++			  dt->refs);
+ 	return 1; /* but the original ref still exists so do not free it. */
+ }
+ 
+diff --git a/gfs2/fsck/pass1b.c b/gfs2/fsck/pass1b.c
+index d6b52e0..838b75e 100644
+--- a/gfs2/fsck/pass1b.c
++++ b/gfs2/fsck/pass1b.c
+@@ -20,7 +20,7 @@ struct fxn_info {
+ };
+ 
+ struct dup_handler {
+-	struct duptree *b;
++	struct duptree *dt;
+ 	struct inode_with_dups *id;
+ 	int ref_inode_count;
+ 	int ref_count;
+@@ -177,21 +177,21 @@ static int find_dentry(struct gfs2_inode *ip, struct gfs2_dirent *de,
+ {
+ 	struct osi_node *n, *next = NULL;
+ 	osi_list_t *tmp2;
+-	struct duptree *b;
++	struct duptree *dt;
+ 	int found;
+ 
+ 	for (n = osi_first(&dup_blocks); n; n = next) {
+ 		next = osi_next(n);
+-		b = (struct duptree *)n;
++		dt = (struct duptree *)n;
+ 		found = 0;
+-		osi_list_foreach(tmp2, &b->ref_invinode_list) {
++		osi_list_foreach(tmp2, &dt->ref_invinode_list) {
+ 			if (check_dir_dup_ref(ip, de, tmp2, filename)) {
+ 				found = 1;
+ 				break;
+ 			}
+ 		}
+ 		if (!found) {
+-			osi_list_foreach(tmp2, &b->ref_inode_list) {
++			osi_list_foreach(tmp2, &dt->ref_inode_list) {
+ 				if (check_dir_dup_ref(ip, de, tmp2, filename))
+ 					break;
+ 			}
+@@ -208,7 +208,7 @@ static int clear_dup_metalist(struct gfs2_inode *ip, uint64_t block,
+ 			      void *private)
+ {
+ 	struct dup_handler *dh = (struct dup_handler *) private;
+-	struct duptree *d;
++	struct duptree *dt;
+ 
+ 	if (!valid_block(ip->i_sbd, block))
+ 		return 0;
+@@ -223,14 +223,14 @@ static int clear_dup_metalist(struct gfs2_inode *ip, uint64_t block,
+ 	   to delete it altogether. If the block is a duplicate referenced
+ 	   block, we need to keep its type intact and let the caller sort
+ 	   it out once we're down to a single reference. */
+-	d = dupfind(block);
+-	if (!d) {
++	dt = dupfind(block);
++	if (!dt) {
+ 		fsck_blockmap_set(ip, block, _("no longer valid"),
+ 				  gfs2_block_free);
+ 		return 0;
+ 	}
+ 	/* This block, having failed the above test, is duplicated somewhere */
+-	if (block == dh->b->block) {
++	if (block == dh->dt->block) {
+ 		log_err( _("Not clearing duplicate reference in inode \"%s\" "
+ 			   "at block #%llu (0x%llx) to block #%llu (0x%llx) "
+ 			   "because it's valid for another inode.\n"),
+@@ -396,7 +396,7 @@ static enum dup_ref_type get_ref_type(struct inode_with_dups *id)
+ 	return ref_types;
+ }
+ 
+-static void log_inode_reference(struct duptree *b, osi_list_t *tmp, int inval)
++static void log_inode_reference(struct duptree *dt, osi_list_t *tmp, int inval)
+ {
+ 	char reftypestring[32];
+ 	struct inode_with_dups *id;
+@@ -416,8 +416,8 @@ static void log_inode_reference(struct duptree *b, osi_list_t *tmp, int inval)
+ 		    "block %llu (0x%llx) (%s)\n"), id->name,
+ 		  (unsigned long long)id->block_no,
+ 		  (unsigned long long)id->block_no, id->dup_count,
+-		  (unsigned long long)b->block,
+-		  (unsigned long long)b->block, reftypestring);
++		  (unsigned long long)dt->block,
++		  (unsigned long long)dt->block, reftypestring);
+ }
+ /*
+  * resolve_dup_references - resolve all but the last dinode that has a
+@@ -432,7 +432,7 @@ static void log_inode_reference(struct duptree *b, osi_list_t *tmp, int inval)
+  * acceptable_ref - Delete dinodes that reference the given block as anything
+  *                  _but_ this type.  Try to save references as this type.
+  */
+-static int resolve_dup_references(struct gfs2_sbd *sdp, struct duptree *b,
++static int resolve_dup_references(struct gfs2_sbd *sdp, struct duptree *dt,
+ 				  osi_list_t *ref_list, struct dup_handler *dh,
+ 				  int inval, int acceptable_ref)
+ {
+@@ -459,7 +459,7 @@ static int resolve_dup_references(struct gfs2_sbd *sdp, struct duptree *b,
+ 			return FSCK_OK;
+ 
+ 		id = osi_list_entry(tmp, struct inode_with_dups, list);
+-		dh->b = b;
++		dh->dt = dt;
+ 		dh->id = id;
+ 
+ 		if (dh->ref_inode_count == 1) /* down to the last reference */
+@@ -490,8 +490,8 @@ static int resolve_dup_references(struct gfs2_sbd *sdp, struct duptree *b,
+ 					  id->name,
+ 					  (unsigned long long)id->block_no,
+ 					  (unsigned long long)id->block_no,
+-					  (unsigned long long)b->block,
+-					  (unsigned long long)b->block,
++					  (unsigned long long)dt->block,
++					  (unsigned long long)dt->block,
+ 					  reftypes[this_ref]);
+ 				continue; /* don't delete the dinode */
+ 			}
+@@ -509,8 +509,8 @@ static int resolve_dup_references(struct gfs2_sbd *sdp, struct duptree *b,
+ 			    "really %s.\n"),
+ 			  id->name, (unsigned long long)id->block_no,
+ 			  (unsigned long long)id->block_no,
+-			  (unsigned long long)b->block,
+-			  (unsigned long long)b->block,
++			  (unsigned long long)dt->block,
++			  (unsigned long long)dt->block,
+ 			  reftypes[this_ref], reftypes[acceptable_ref]);
+ 		if (!(query( _("Okay to delete %s inode %lld (0x%llx)? "
+ 			       "(y/n) "),
+@@ -560,7 +560,7 @@ static int resolve_dup_references(struct gfs2_sbd *sdp, struct duptree *b,
+ 	return 0;
+ }
+ 
+-static int handle_dup_blk(struct gfs2_sbd *sdp, struct duptree *b)
++static int handle_dup_blk(struct gfs2_sbd *sdp, struct duptree *dt)
+ {
+ 	struct gfs2_inode *ip;
+ 	osi_list_t *tmp;
+@@ -572,12 +572,12 @@ static int handle_dup_blk(struct gfs2_sbd *sdp, struct duptree *b)
+ 	enum dup_ref_type acceptable_ref;
+ 
+ 	/* Count the duplicate references, both valid and invalid */
+-	osi_list_foreach(tmp, &b->ref_invinode_list) {
++	osi_list_foreach(tmp, &dt->ref_invinode_list) {
+ 		id = osi_list_entry(tmp, struct inode_with_dups, list);
+ 		dh.ref_inode_count++;
+ 		dh.ref_count += id->dup_count;
+ 	}
+-	osi_list_foreach(tmp, &b->ref_inode_list) {
++	osi_list_foreach(tmp, &dt->ref_inode_list) {
+ 		id = osi_list_entry(tmp, struct inode_with_dups, list);
+ 		dh.ref_inode_count++;
+ 		dh.ref_count += id->dup_count;
+@@ -586,13 +586,14 @@ static int handle_dup_blk(struct gfs2_sbd *sdp, struct duptree *b)
+ 	/* Log the duplicate references */
+ 	log_notice( _("Block %llu (0x%llx) has %d inodes referencing it"
+ 		   " for a total of %d duplicate references:\n"),
+-		   (unsigned long long)b->block, (unsigned long long)b->block,
+-		   dh.ref_inode_count, dh.ref_count);
++		    (unsigned long long)dt->block,
++		    (unsigned long long)dt->block,
++		    dh.ref_inode_count, dh.ref_count);
+ 
+-	osi_list_foreach(tmp, &b->ref_invinode_list)
+-		log_inode_reference(b, tmp, 1);
+-	osi_list_foreach(tmp, &b->ref_inode_list)
+-		log_inode_reference(b, tmp, 0);
++	osi_list_foreach(tmp, &dt->ref_invinode_list)
++		log_inode_reference(dt, tmp, 1);
++	osi_list_foreach(tmp, &dt->ref_inode_list)
++		log_inode_reference(dt, tmp, 0);
+ 
+ 	/* Figure out the block type to see if we can eliminate references
+ 	   to a different type. In other words, if the duplicate block looks
+@@ -601,7 +602,7 @@ static int handle_dup_blk(struct gfs2_sbd *sdp, struct duptree *b)
+ 	   references to it as metadata.  Dinodes with such references are
+ 	   clearly corrupt and need to be deleted.
+ 	   And if we're left with a single reference, problem solved. */
+-	bh = bread(sdp, b->block);
++	bh = bread(sdp, dt->block);
+ 	cmagic = ((struct gfs2_meta_header *)(bh->b_data))->mh_magic;
+ 	ctype = ((struct gfs2_meta_header *)(bh->b_data))->mh_type;
+ 	brelse(bh);
+@@ -646,10 +647,10 @@ static int handle_dup_blk(struct gfs2_sbd *sdp, struct duptree *b)
+ 			     "Step 1: Eliminate references to block %llu "
+ 			     "(0x%llx) that were previously marked "
+ 			     "invalid.\n"),
+-			   (unsigned long long)b->block,
+-			   (unsigned long long)b->block);
+-		last_reference = resolve_dup_references(sdp, b,
+-							&b->ref_invinode_list,
++			   (unsigned long long)dt->block,
++			   (unsigned long long)dt->block);
++		last_reference = resolve_dup_references(sdp, dt,
++							&dt->ref_invinode_list,
+ 							&dh, 1, ref_types);
+ 	}
+ 	/* Step 2 - eliminate reference from inodes that reference it as the
+@@ -661,10 +662,10 @@ static int handle_dup_blk(struct gfs2_sbd *sdp, struct duptree *b)
+ 		log_debug( _("----------------------------------------------\n"
+ 			     "Step 2: Eliminate references to block %llu "
+ 			     "(0x%llx) that need the wrong block type.\n"),
+-			   (unsigned long long)b->block,
+-			   (unsigned long long)b->block);
+-		last_reference = resolve_dup_references(sdp, b,
+-							&b->ref_inode_list,
++			   (unsigned long long)dt->block,
++			   (unsigned long long)dt->block);
++		last_reference = resolve_dup_references(sdp, dt,
++							&dt->ref_inode_list,
+ 							&dh, 0,
+ 							acceptable_ref);
+ 	}
+@@ -676,20 +677,20 @@ static int handle_dup_blk(struct gfs2_sbd *sdp, struct duptree *b)
+ 		log_debug( _("----------------------------------------------\n"
+ 			     "Step 3: Choose one reference to block %llu "
+ 			     "(0x%llx) to keep.\n"),
+-			   (unsigned long long)b->block,
+-			   (unsigned long long)b->block);
+-		last_reference = resolve_dup_references(sdp, b,
+-							&b->ref_inode_list,
++			   (unsigned long long)dt->block,
++			   (unsigned long long)dt->block);
++		last_reference = resolve_dup_references(sdp, dt,
++							&dt->ref_inode_list,
+ 							&dh, 0, ref_types);
+ 	}
+ 	/* Now fix the block type of the block in question. */
+-	if (osi_list_empty(&b->ref_inode_list)) {
++	if (osi_list_empty(&dt->ref_inode_list)) {
+ 		log_notice( _("Block %llu (0x%llx) has no more references; "
+ 			      "Marking as 'free'.\n"),
+-			    (unsigned long long)b->block,
+-			    (unsigned long long)b->block);
+-		gfs2_blockmap_set(bl, b->block, gfs2_block_free);
+-		check_n_fix_bitmap(sdp, b->block, gfs2_block_free);
++			    (unsigned long long)dt->block,
++			    (unsigned long long)dt->block);
++		gfs2_blockmap_set(bl, dt->block, gfs2_block_free);
++		check_n_fix_bitmap(sdp, dt->block, gfs2_block_free);
+ 		return 0;
+ 	}
+ 	if (last_reference) {
+@@ -697,14 +698,14 @@ static int handle_dup_blk(struct gfs2_sbd *sdp, struct duptree *b)
+ 
+ 		log_notice( _("Block %llu (0x%llx) has only one remaining "
+ 			      "reference.\n"),
+-			    (unsigned long long)b->block,
+-			    (unsigned long long)b->block);
++			    (unsigned long long)dt->block,
++			    (unsigned long long)dt->block);
+ 		/* If we're down to a single reference (and not all references
+ 		   deleted, which may be the case of an inode that has only
+ 		   itself and a reference), we need to reset the block type
+ 		   from invalid to data or metadata. Start at the first one
+ 		   in the list, not the structure's place holder. */
+-		tmp = (&b->ref_inode_list)->next;
++		tmp = (&dt->ref_inode_list)->next;
+ 		id = osi_list_entry(tmp, struct inode_with_dups, list);
+ 		log_debug( _("----------------------------------------------\n"
+ 			     "Step 4. Set block type based on the remaining "
+@@ -720,27 +721,27 @@ static int handle_dup_blk(struct gfs2_sbd *sdp, struct duptree *b)
+ 				     "the block as free.\n"),
+ 				   (unsigned long long)id->block_no,
+ 				   (unsigned long long)id->block_no);
+-			fsck_blockmap_set(ip, b->block,
++			fsck_blockmap_set(ip, dt->block,
+ 					  _("reference-repaired leaf"),
+ 					  gfs2_block_free);
+ 		} else if (id->reftypecount[ref_is_inode]) {
+ 			set_ip_blockmap(ip, 0); /* 0=do not add to dirtree */
+ 		} else if (id->reftypecount[ref_as_data]) {
+-			fsck_blockmap_set(ip, b->block,
++			fsck_blockmap_set(ip, dt->block,
+ 					  _("reference-repaired data"),
+ 					  gfs2_block_used);
+ 		} else if (id->reftypecount[ref_as_meta]) {
+ 			if (is_dir(&ip->i_di, sdp->gfs1))
+-				fsck_blockmap_set(ip, b->block,
++				fsck_blockmap_set(ip, dt->block,
+ 						  _("reference-repaired leaf"),
+ 						  gfs2_leaf_blk);
+ 			else
+-				fsck_blockmap_set(ip, b->block,
++				fsck_blockmap_set(ip, dt->block,
+ 						  _("reference-repaired "
+ 						    "indirect"),
+ 						  gfs2_indir_blk);
+ 		} else
+-			fsck_blockmap_set(ip, b->block,
++			fsck_blockmap_set(ip, dt->block,
+ 					  _("reference-repaired extended "
+ 					    "attribute"),
+ 					  gfs2_meta_eattr);
+@@ -757,7 +758,7 @@ static int handle_dup_blk(struct gfs2_sbd *sdp, struct duptree *b)
+  * use in pass2 */
+ int pass1b(struct gfs2_sbd *sdp)
+ {
+-	struct duptree *b;
++	struct duptree *dt;
+ 	uint64_t i;
+ 	uint8_t q;
+ 	struct osi_node *n, *next = NULL;
+@@ -813,9 +814,9 @@ int pass1b(struct gfs2_sbd *sdp)
+ out:
+         for (n = osi_first(&dup_blocks); n; n = next) {
+ 		next = osi_next(n);
+-                b = (struct duptree *)n;
++                dt = (struct duptree *)n;
+ 		if (!skip_this_pass && !rc) /* no error & not asked to skip the rest */
+-			handle_dup_blk(sdp, b);
++			handle_dup_blk(sdp, dt);
+ 		/* Do not attempt to free the dup_blocks list or its parts
+ 		   here because any func that calls check_metatree needs
+ 		   to check duplicate status based on this linked list.
+diff --git a/gfs2/fsck/util.c b/gfs2/fsck/util.c
+index a33e452..78d4e79 100644
+--- a/gfs2/fsck/util.c
++++ b/gfs2/fsck/util.c
+@@ -156,7 +156,7 @@ int fsck_query(const char *format, ...)
+ static struct duptree *gfs2_dup_set(uint64_t dblock, int create)
+ {
+ 	struct osi_node **newn = &dup_blocks.osi_node, *parent = NULL;
+-	struct duptree *data;
++	struct duptree *dt;
+ 
+ 	/* Figure out where to put new node */
+ 	while (*newn) {
+@@ -173,20 +173,20 @@ static struct duptree *gfs2_dup_set(uint64_t dblock, int create)
+ 
+ 	if (!create)
+ 		return NULL;
+-	data = malloc(sizeof(struct duptree));
++	dt = malloc(sizeof(struct duptree));
+ 	dups_found++;
+-	memset(data, 0, sizeof(struct duptree));
++	memset(dt, 0, sizeof(struct duptree));
+ 	/* Add new node and rebalance tree. */
+-	data->block = dblock;
+-	data->refs = 1; /* reference 1 is actually the reference we need to
+-			   discover in pass1b. */
+-	data->first_ref_found = 0;
+-	osi_list_init(&data->ref_inode_list);
+-	osi_list_init(&data->ref_invinode_list);
+-	osi_link_node(&data->node, parent, newn);
+-	osi_insert_color(&data->node, &dup_blocks);
+-
+-	return data;
++	dt->block = dblock;
++	dt->refs = 1; /* reference 1 is actually the reference we need to
++			 discover in pass1b. */
++	dt->first_ref_found = 0;
++	osi_list_init(&dt->ref_inode_list);
++	osi_list_init(&dt->ref_invinode_list);
++	osi_link_node(&dt->node, parent, newn);
++	osi_insert_color(&dt->node, &dup_blocks);
++
++	return dt;
+ }
+ 
+ /**
+@@ -371,23 +371,23 @@ void dup_listent_delete(struct inode_with_dups *id)
+ 	free(id);
+ }
+ 
+-void dup_delete(struct duptree *b)
++void dup_delete(struct duptree *dt)
+ {
+ 	struct inode_with_dups *id;
+ 	osi_list_t *tmp;
+ 
+-	while (!osi_list_empty(&b->ref_invinode_list)) {
+-		tmp = (&b->ref_invinode_list)->next;
++	while (!osi_list_empty(&dt->ref_invinode_list)) {
++		tmp = (&dt->ref_invinode_list)->next;
+ 		id = osi_list_entry(tmp, struct inode_with_dups, list);
+ 		dup_listent_delete(id);
+ 	}
+-	while (!osi_list_empty(&b->ref_inode_list)) {
+-		tmp = (&b->ref_inode_list)->next;
++	while (!osi_list_empty(&dt->ref_inode_list)) {
++		tmp = (&dt->ref_inode_list)->next;
+ 		id = osi_list_entry(tmp, struct inode_with_dups, list);
+ 		dup_listent_delete(id);
+ 	}
+-	osi_erase(&b->node, &dup_blocks);
+-	free(b);
++	osi_erase(&dt->node, &dup_blocks);
++	free(dt);
+ }
+ 
+ void dirtree_delete(struct dir_info *b)

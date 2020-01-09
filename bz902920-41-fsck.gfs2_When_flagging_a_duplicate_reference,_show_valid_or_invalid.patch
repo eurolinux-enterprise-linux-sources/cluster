@@ -1,0 +1,29 @@
+commit ebf7e17895b0ba7b4bf97af9714e52d7ea63efa0
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Wed Apr 3 10:03:49 2013 -0700
+
+    fsck.gfs2: When flagging a duplicate reference, show valid or invalid
+    
+    This patch changes the logging when duplicate block references are
+    flagged. The idea is to print whether or not the inode with the reference
+    is valid or invalid, which helps in diagnosing problems when duplicate
+    block references are resolved.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/util.c b/gfs2/fsck/util.c
+index 48c4b33..f40aeb3 100644
+--- a/gfs2/fsck/util.c
++++ b/gfs2/fsck/util.c
+@@ -317,9 +317,10 @@ int add_duplicate_ref(struct gfs2_inode *ip, uint64_t block,
+ 	id->reftypecount[reftype]++;
+ 	id->dup_count++;
+ 	log_info( _("Found %d reference(s) to block %llu"
+-		    " (0x%llx) as %s in inode #%llu (0x%llx)\n"),
++		    " (0x%llx) as %s in %s inode #%llu (0x%llx)\n"),
+ 		  id->dup_count, (unsigned long long)block,
+ 		  (unsigned long long)block, reftypes[reftype],
++		  inode_valid ? _("valid") : _("invalid"),
+ 		  (unsigned long long)ip->i_di.di_num.no_addr,
+ 		  (unsigned long long)ip->i_di.di_num.no_addr);
+ 	if (first)

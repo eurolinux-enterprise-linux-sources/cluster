@@ -1,0 +1,485 @@
+commit 988a76cb1d229832aea0d0f928ae4a9a24e8feaa
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Tue Mar 12 06:54:39 2013 -0700
+
+    fsck.gfs2: Rework the "undo" functions
+    
+    In pass1, it traverses the metadata free, processing each dinode and
+    marking which blocks are used by that dinode. If a dinode is found
+    to have unrecoverable errors, it does a bunch of work to "undo" the
+    things it did. This is especially important for the processing of
+    duplicate block references. Suppose dinode X references block 1234.
+    Later in pass1, suppose a different dinode, Y, also references block
+    1234. This is flagged as a duplicate block reference. Still later,
+    suppose pass1 determines dinode Y is bad. Now it has to undo the
+    work it did. It needs to properly unmark the data and metadata
+    blocks it marked as no longer "free" so that valid references that
+    follow aren't flagged as duplicate references. At the same time,
+    it needs to unflag block 1234 as a duplicate reference as well, so
+    that dinode X's original reference is still considered valid.
+    
+    Before this patch, fsck.gfs2 was trying to traverse the entire
+    metadata tree for the bad dinode, trying to "undo" the designations.
+    That becomes a huge problem if the damage was discovered in the
+    middle of the metadata, in which case it may never have flagged any
+    of the data blocks as "in use as data" in its blockmap. The result
+    of "undoing" the designations sometimes resulted in blocks improperly
+    being marked as "free" when they were, in fact, referenced by other
+    valid dinodes.
+    
+    For example, suppose corrupt dinode Y references metadata blocks
+    1234, 1235, and 1236. Now suppose a serious problem is found as part
+    of its processing of block 1234, and so it stopped its metadata tree
+    traversal there. Metadata blocks 1235 and 1236 are still listed as
+    metadata for the bad dinode, but if we traverse the entire tree,
+    those two blocks may be improperly processed. If another dinode
+    actually uses blocks 1235 or 1236, the improper "undo" processing
+    of those two blocks can screw up the valid references.
+    
+    This patch reworks the "undo" functions so that the "undo" functions
+    don't get called on the entire metadata and data of the defective
+    dinode. Instead, only the metadata and data blocks queued onto the
+    metadata list are processed. This should ensure that the "undo"
+    functions only operate on blocks that were processed in the first
+    place.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index e0fbd33..39c39ce 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -1257,7 +1257,7 @@ static int build_and_check_metalist(struct gfs2_inode *ip, osi_list_t *mlp,
+ 				if (err < 0) {
+ 					stack;
+ 					error = err;
+-					goto fail;
++					return error;
+ 				}
+ 				if (err > 0) {
+ 					if (!error)
+@@ -1276,14 +1276,11 @@ static int build_and_check_metalist(struct gfs2_inode *ip, osi_list_t *mlp,
+ 				}
+ 				if (!nbh)
+ 					nbh = bread(ip->i_sbd, block);
+-				osi_list_add(&nbh->b_altlist, cur_list);
++				osi_list_add_prev(&nbh->b_altlist, cur_list);
+ 			} /* for all data on the indirect block */
+ 		} /* for blocks at that height */
+ 	} /* for height */
+-	return error;
+-fail:
+-	free_metalist(ip, mlp);
+-	return error;
++	return 0;
+ }
+ 
+ /**
+@@ -1329,6 +1326,27 @@ static int check_data(struct gfs2_inode *ip, struct metawalk_fxns *pass,
+ 	return error;
+ }
+ 
++static int undo_check_data(struct gfs2_inode *ip, struct metawalk_fxns *pass,
++			   uint64_t *ptr_start, char *ptr_end)
++{
++	int rc = 0;
++	uint64_t block, *ptr;
++
++	/* If there isn't much pointer corruption check the pointers */
++	for (ptr = ptr_start ; (char *)ptr < ptr_end && !fsck_abort; ptr++) {
++		if (!*ptr)
++			continue;
++
++		if (skip_this_pass || fsck_abort)
++			return 1;
++		block =  be64_to_cpu(*ptr);
++		rc = pass->undo_check_data(ip, block, pass->private);
++		if (rc < 0)
++			return rc;
++	}
++	return 0;
++}
++
+ static int hdr_size(struct gfs2_buffer_head *bh, int height)
+ {
+ 	if (height > 1) {
+@@ -1361,6 +1379,7 @@ int check_metatree(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 	int  i, head_size;
+ 	uint64_t blks_checked = 0;
+ 	int error, rc;
++	int metadata_clean = 0;
+ 
+ 	if (!height && !is_dir(&ip->i_di, ip->i_sbd->gfs1))
+ 		return 0;
+@@ -1372,35 +1391,21 @@ int check_metatree(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 	error = build_and_check_metalist(ip, &metalist[0], pass);
+ 	if (error) {
+ 		stack;
+-		free_metalist(ip, &metalist[0]);
+-		return error;
++		goto undo_metalist;
+ 	}
+ 
++	metadata_clean = 1;
+ 	/* For directories, we've already checked the "data" blocks which
+ 	 * comprise the directory hash table, so we perform the directory
+ 	 * checks and exit. */
+         if (is_dir(&ip->i_di, ip->i_sbd->gfs1)) {
+-		free_metalist(ip, &metalist[0]);
+ 		if (!(ip->i_di.di_flags & GFS2_DIF_EXHASH))
+-			return 0;
++			goto out;
+ 		/* check validity of leaf blocks and leaf chains */
+ 		error = check_leaf_blks(ip, pass);
+-		return error;
+-	}
+-
+-	/* Free the metalist buffers from heights we don't need to check.
+-	   For the rest we'll free as we check them to save time.
+-	   metalist[0] will only have the dinode bh, so we can skip it. */
+-	for (i = 1; i < height - 1; i++) {
+-		list = &metalist[i];
+-		while (!osi_list_empty(list)) {
+-			bh = osi_list_entry(list->next,
+-					    struct gfs2_buffer_head, b_altlist);
+-			if (bh == ip->i_bh)
+-				osi_list_del(&bh->b_altlist);
+-			else
+-				brelse(bh);
+-		}
++		if (error)
++			goto undo_metalist;
++		goto out;
+ 	}
+ 
+ 	/* check data blocks */
+@@ -1408,7 +1413,7 @@ int check_metatree(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 	if (ip->i_di.di_blocks > COMFORTABLE_BLKS)
+ 		last_reported_fblock = -10000000;
+ 
+-	while (error >= 0 && !osi_list_empty(list)) {
++	while (!error && !osi_list_empty(list)) {
+ 		if (fsck_abort) {
+ 			free_metalist(ip, &metalist[0]);
+ 			return 0;
+@@ -1426,21 +1431,13 @@ int check_metatree(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 		}
+ 
+ 		if (pass->check_data)
+-			rc = check_data(ip, pass, (uint64_t *)
+-					(bh->b_data + head_size),
+-					(bh->b_data + ip->i_sbd->bsize),
+-					&blks_checked);
+-		else
+-			rc = 0;
++			error = check_data(ip, pass, (uint64_t *)
++					   (bh->b_data + head_size),
++					   (bh->b_data + ip->i_sbd->bsize),
++					   &blks_checked);
+ 
+-		if (rc && (!error || rc < 0))
+-			error = rc;
+ 		if (pass->big_file_msg && ip->i_di.di_blocks > COMFORTABLE_BLKS)
+ 			pass->big_file_msg(ip, blks_checked);
+-		if (bh == ip->i_bh)
+-			osi_list_del(&bh->b_altlist);
+-		else
+-			brelse(bh);
+ 	}
+ 	if (pass->big_file_msg && ip->i_di.di_blocks > COMFORTABLE_BLKS) {
+ 		log_notice( _("\rLarge file at %lld (0x%llx) - 100 percent "
+@@ -1450,6 +1447,50 @@ int check_metatree(struct gfs2_inode *ip, struct metawalk_fxns *pass)
+ 			    (unsigned long long)ip->i_di.di_num.no_addr);
+ 		fflush(stdout);
+ 	}
++undo_metalist:
++	if (!error)
++		goto out;
++	log_err( _("Error: inode %llu (0x%llx) had unrecoverable errors.\n"),
++		 (unsigned long long)ip->i_di.di_num.no_addr,
++		 (unsigned long long)ip->i_di.di_num.no_addr);
++	if (!query( _("Remove the invalid inode? (y/n) "))) {
++		free_metalist(ip, &metalist[0]);
++		log_err(_("Invalid inode not deleted.\n"));
++		return error;
++	}
++	for (i = 0; pass->undo_check_meta && i < height; i++) {
++		while (!osi_list_empty(&metalist[i])) {
++			list = &metalist[i];
++			bh = osi_list_entry(list->next,
++					    struct gfs2_buffer_head,
++					    b_altlist);
++			log_err(_("Undoing metadata work for block %llu "
++				  "(0x%llx)\n"),
++				(unsigned long long)bh->b_blocknr,
++				(unsigned long long)bh->b_blocknr);
++			if (i)
++				rc = pass->undo_check_meta(ip, bh->b_blocknr,
++							   i, pass->private);
++			else
++				rc = 0;
++			if (metadata_clean && rc == 0 && i == height - 1) {
++				head_size = hdr_size(bh, height);
++				if (head_size)
++					undo_check_data(ip, pass, (uint64_t *)
++					      (bh->b_data + head_size),
++					      (bh->b_data + ip->i_sbd->bsize));
++			}
++			if (bh == ip->i_bh)
++				osi_list_del(&bh->b_altlist);
++			else
++				brelse(bh);
++		}
++	}
++	/* Set the dinode as "bad" so it gets deleted */
++	fsck_blockmap_set(ip, ip->i_di.di_num.no_addr,
++			  _("corrupt"), gfs2_block_free);
++	log_err(_("The corrupt inode was invalidated.\n"));
++out:
+ 	free_metalist(ip, &metalist[0]);
+ 	return error;
+ }
+diff --git a/gfs2/fsck/metawalk.h b/gfs2/fsck/metawalk.h
+index 486c6eb..f5e71e1 100644
+--- a/gfs2/fsck/metawalk.h
++++ b/gfs2/fsck/metawalk.h
+@@ -108,6 +108,10 @@ struct metawalk_fxns {
+ 	int (*repair_leaf) (struct gfs2_inode *ip, uint64_t *leaf_no,
+ 			    int lindex, int ref_count, const char *msg,
+ 			    void *private);
++	int (*undo_check_meta) (struct gfs2_inode *ip, uint64_t block,
++				int h, void *private);
++	int (*undo_check_data) (struct gfs2_inode *ip, uint64_t block,
++				void *private);
+ };
+ 
+ #endif /* _METAWALK_H */
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index 6f9a953..05e7c68 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -38,8 +38,7 @@ static int check_leaf(struct gfs2_inode *ip, uint64_t block, void *private);
+ static int check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 			  struct gfs2_buffer_head **bh, int h, void *private);
+ static int undo_check_metalist(struct gfs2_inode *ip, uint64_t block,
+-			       struct gfs2_buffer_head **bh, int h,
+-			       void *private);
++			       int h, void *private);
+ static int check_data(struct gfs2_inode *ip, uint64_t block, void *private);
+ static int undo_check_data(struct gfs2_inode *ip, uint64_t block,
+ 			   void *private);
+@@ -103,12 +102,8 @@ struct metawalk_fxns pass1_fxns = {
+ 	.finish_eattr_indir = finish_eattr_indir,
+ 	.big_file_msg = big_file_comfort,
+ 	.repair_leaf = pass1_repair_leaf,
+-};
+-
+-struct metawalk_fxns undo_fxns = {
+-	.private = NULL,
+-	.check_metalist = undo_check_metalist,
+-	.check_data = undo_check_data,
++	.undo_check_meta = undo_check_metalist,
++	.undo_check_data = undo_check_data,
+ };
+ 
+ struct metawalk_fxns invalidate_fxns = {
+@@ -325,53 +320,67 @@ static int check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 	return 0;
+ }
+ 
+-static int undo_check_metalist(struct gfs2_inode *ip, uint64_t block,
+-			       struct gfs2_buffer_head **bh, int h,
+-			       void *private)
++/* undo_reference - undo previously processed data or metadata
++ * We've treated the metadata for this dinode as good so far, but not we
++ * realize it's bad. So we need to undo what we've done.
++ *
++ * Returns: 0 - We need to process the block as metadata. In other words,
++ *              we need to undo any blocks it refers to.
++ *          1 - We can't process the block as metadata.
++ */
++
++static int undo_reference(struct gfs2_inode *ip, uint64_t block, int meta,
++			  void *private)
+ {
+-	int found_dup = 0, iblk_type;
+-	struct gfs2_buffer_head *nbh;
+ 	struct block_count *bc = (struct block_count *)private;
+-
+-	*bh = NULL;
++	struct duptree *dt;
++	struct inode_with_dups *id;
+ 
+ 	if (!valid_block(ip->i_sbd, block)) { /* blk outside of FS */
+ 		fsck_blockmap_set(ip, ip->i_di.di_num.no_addr,
+ 				  _("bad block referencing"), gfs2_block_free);
+ 		return 1;
+ 	}
+-	if (is_dir(&ip->i_di, ip->i_sbd->gfs1) && h == ip->i_di.di_height)
+-		iblk_type = GFS2_METATYPE_JD;
+-	else
+-		iblk_type = GFS2_METATYPE_IN;
+ 
+-	found_dup = find_remove_dup(ip, block, _("Metadata"));
+-	nbh = bread(ip->i_sbd, block);
++	if (meta)
++		bc->indir_count--;
++	dt = dupfind(block);
++	if (dt) {
++		/* remove all duplicate reference structures from this inode */
++		do {
++			id = find_dup_ref_inode(dt, ip);
++			if (!id)
++				break;
+ 
+-	if (gfs2_check_meta(nbh, iblk_type)) {
+-		if (!found_dup) {
+-			fsck_blockmap_set(ip, block, _("bad indirect"),
+-					  gfs2_block_free);
+-			brelse(nbh);
++			dup_listent_delete(id);
++		} while (id);
++
++		if (dt->refs) {
++			log_err(_("Block %llu (0x%llx) is still referenced "
++				  "from another inode; not freeing.\n"),
++				(unsigned long long)block,
++				(unsigned long long)block);
+ 			return 1;
+ 		}
+-		brelse(nbh);
+-		nbh = NULL;
+-	} else /* blk check ok */
+-		*bh = nbh;
+-
+-	bc->indir_count--;
+-	if (found_dup) {
+-		if (nbh)
+-			brelse(nbh);
+-		*bh = NULL;
+-		return 1; /* don't process the metadata again */
+-	} else
+-		fsck_blockmap_set(ip, block, _("bad indirect"),
+-				  gfs2_block_free);
++	}
++	fsck_blockmap_set(ip, block,
++			  meta ? _("bad indirect") : _("referenced data"),
++			  gfs2_block_free);
+ 	return 0;
+ }
+ 
++static int undo_check_metalist(struct gfs2_inode *ip, uint64_t block,
++			       int h, void *private)
++{
++	return undo_reference(ip, block, 1, private);
++}
++
++static int undo_check_data(struct gfs2_inode *ip, uint64_t block,
++			   void *private)
++{
++	return undo_reference(ip, block, 0, private);
++}
++
+ static int check_data(struct gfs2_inode *ip, uint64_t block, void *private)
+ {
+ 	uint8_t q;
+@@ -437,71 +446,9 @@ static int check_data(struct gfs2_inode *ip, uint64_t block, void *private)
+ 	return 0;
+ }
+ 
+-static int undo_check_data(struct gfs2_inode *ip, uint64_t block,
+-			   void *private)
+-{
+-	struct block_count *bc = (struct block_count *) private;
+-
+-	if (!valid_block(ip->i_sbd, block)) {
+-		/* Mark the owner of this block with the bad_block
+-		 * designator so we know to check it for out of range
+-		 * blocks later */
+-		fsck_blockmap_set(ip, ip->i_di.di_num.no_addr,
+-				  _("bad (invalid or out of range) data"),
+-				  gfs2_block_free);
+-		return 1;
+-	}
+-	bc->data_count--;
+-	return free_block_if_notdup(ip, block, _("data"));
+-}
+-
+ static int remove_inode_eattr(struct gfs2_inode *ip, struct block_count *bc)
+ {
+-	struct duptree *dt;
+-	struct inode_with_dups *id;
+-	osi_list_t *ref;
+-	int moved = 0;
+-
+-	/* If it's a duplicate reference to the block, we need to check
+-	   if the reference is on the valid or invalid inodes list.
+-	   If it's on the valid inode's list, move it to the invalid
+-	   inodes list.  The reason is simple: This inode, although
+-	   valid, has an now-invalid reference, so we should not give
+-	   this reference preferential treatment over others. */
+-	dt = dupfind(ip->i_di.di_eattr);
+-	if (dt) {
+-		osi_list_foreach(ref, &dt->ref_inode_list) {
+-			id = osi_list_entry(ref, struct inode_with_dups, list);
+-			if (id->block_no == ip->i_di.di_num.no_addr) {
+-				log_debug( _("Moving inode %lld (0x%llx)'s "
+-					     "duplicate reference to %lld "
+-					     "(0x%llx) from the valid to the "
+-					     "invalid reference list.\n"),
+-					   (unsigned long long)
+-					   ip->i_di.di_num.no_addr,
+-					   (unsigned long long)
+-					   ip->i_di.di_num.no_addr,
+-					   (unsigned long long)
+-					   ip->i_di.di_eattr,
+-					   (unsigned long long)
+-					   ip->i_di.di_eattr);
+-				/* Move from the normal to the invalid list */
+-				osi_list_del(&id->list);
+-				osi_list_add_prev(&id->list,
+-						  &dt->ref_invinode_list);
+-				moved = 1;
+-				break;
+-			}
+-		}
+-		if (!moved)
+-			log_debug( _("Duplicate reference to %lld "
+-				     "(0x%llx) not moved.\n"),
+-				   (unsigned long long)ip->i_di.di_eattr,
+-				   (unsigned long long)ip->i_di.di_eattr);
+-	} else {
+-		delete_block(ip, ip->i_di.di_eattr, NULL,
+-			     "extended attribute", NULL);
+-	}
++	undo_reference(ip, ip->i_di.di_eattr, 0, bc);
+ 	ip->i_di.di_eattr = 0;
+ 	bc->ea_count = 0;
+ 	ip->i_di.di_blocks = 1 + bc->indir_count + bc->data_count;
+@@ -1079,23 +1026,10 @@ static int handle_ip(struct gfs2_sbd *sdp, struct gfs2_inode *ip)
+ 	if (lf_dip && lf_dip->i_di.di_blocks != lf_blks)
+ 		reprocess_inode(lf_dip, "lost+found");
+ 
+-	if (fsck_abort || error < 0)
++	/* We there was an error, we return 0 because we want fsck to continue
++	   and analyze the other dinodes as well. */
++	if (fsck_abort || error != 0)
+ 		return 0;
+-	if (error > 0) {
+-		log_err( _("Error: inode %llu (0x%llx) has unrecoverable "
+-			   "errors; invalidating.\n"),
+-			 (unsigned long long)ip->i_di.di_num.no_addr,
+-			 (unsigned long long)ip->i_di.di_num.no_addr);
+-		undo_fxns.private = &bc;
+-		check_metatree(ip, &undo_fxns);
+-		/* If we undo the metadata accounting, including metadatas
+-		   duplicate block status, we need to make sure later passes
+-		   don't try to free up the metadata referenced by this inode.
+-		   Therefore we mark the inode as free space. */
+-		fsck_blockmap_set(ip, ip->i_di.di_num.no_addr,
+-				  _("corrupt"), gfs2_block_free);
+-		return 0;
+-	}
+ 
+ 	error = check_inode_eattr(ip, &pass1_fxns);
+ 

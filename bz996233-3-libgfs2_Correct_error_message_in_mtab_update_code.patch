@@ -1,0 +1,36 @@
+commit 6ab6b7c93a8868f5f95eea67fc3588af9e8c2a52
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Thu Aug 15 07:41:56 2013 -0500
+
+    libgfs2: Correct error message in mtab update code
+    
+    If we encounter an error while trying to update the /etc/mtab file
+    the code was reporting that the problem in adding an entry. The
+    problem is, it's really trying to add the entries to the temp file,
+    which will be renamed to /etc/mtab, for the sake of removing an
+    entry from mtab. Therefore, I'm correcting the error message so that
+    it makes more sense.
+    
+    rhbz#996233
+
+diff --git a/gfs2/libgfs2/misc.c b/gfs2/libgfs2/misc.c
+index f7fab7e..6807f60 100644
+--- a/gfs2/libgfs2/misc.c
++++ b/gfs2/libgfs2/misc.c
+@@ -240,14 +240,14 @@ static void remove_mtab_entry(struct gfs2_sbd *sdp)
+ 			continue;
+ 		error = addmntent(mtabnew, mountent);
+ 		if (error)
+-			die("Unable to add mount entry to mtab.\n");
++			die("Unable to remove mount entry from mtab.\n");
+ 	}
+ 
+ 	endmntent(mtab);
+ 	fclose(mtabnew);
+ 	close(fd);
+ 	if (rename(mtab_tmpfn, "/etc/mtab"))
+-		fprintf(stderr, "Unable to add mount entry to mtab.\n");
++		fprintf(stderr, "Unable to remove mount entry from mtab.\n");
+ }
+ 
+ void cleanup_metafs(struct gfs2_sbd *sdp)

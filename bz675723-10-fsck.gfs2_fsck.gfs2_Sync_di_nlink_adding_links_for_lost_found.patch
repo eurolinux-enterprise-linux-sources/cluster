@@ -1,0 +1,35 @@
+commit 3b05a9a1941731dbef64f9b5dd8cb7abe000bf89
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Mon Aug 8 14:21:06 2011 -0500
+
+    fsck.gfs2: fsck.gfs2: Sync di_nlink adding links for lost+found
+    
+    When adding a ".." entry to a directory newly linked to lost+found
+    fsck.gfs2 needs to update its di_nlink value to account for the new
+    link.  If not, it can "correct" the di_nlink value to the wrong
+    value and not find the error until a second fsck.gfs2 is done.
+    This only happens in the rare case where there is no pre-existing
+    ".." entry that may be reused to re-link to lost+found.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/lost_n_found.c b/gfs2/fsck/lost_n_found.c
+index 684792a..e5d7571 100644
+--- a/gfs2/fsck/lost_n_found.c
++++ b/gfs2/fsck/lost_n_found.c
+@@ -109,6 +109,7 @@ int add_inode_to_lf(struct gfs2_inode *ip){
+ 			dip = fsck_load_inode(sdp, di->dotdot_parent);
+ 			if (dip->i_di.di_nlink > 0) {
+ 				dip->i_di.di_nlink--;
++				set_di_nlink(dip); /* keep inode tree in sync */
+ 				log_debug(_("Decrementing its links to %d\n"),
+ 					  dip->i_di.di_nlink);
+ 				bmodified(dip->i_bh);
+@@ -119,6 +120,7 @@ int add_inode_to_lf(struct gfs2_inode *ip){
+ 					    "Changing it to 0.\n"),
+ 					  dip->i_di.di_nlink);
+ 				dip->i_di.di_nlink = 0;
++				set_di_nlink(dip); /* keep inode tree in sync */
+ 				bmodified(dip->i_bh);
+ 			}
+ 			fsck_inode_put(&dip);

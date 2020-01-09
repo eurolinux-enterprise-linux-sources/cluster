@@ -1,0 +1,41 @@
+From 2dd28337827ec1da6e2818ad293e2f04871aac31 Mon Sep 17 00:00:00 2001
+From: Bob Peterson <rpeterso@redhat.com>
+Date: Mon, 17 Dec 2012 15:01:02 -0600
+Subject: [PATCH 4/8] gfs2_convert: Use proper header size when reordering
+ meta pointers
+
+This patch changes function fix_metatree to use a proper metadata
+header size. Before, it was using sizeof(struct gfs2_meta_header).
+That's correct in almost all cases. But if you make a big file,
+such that it goes into height==2 (two levels of indirection), then
+truncate the file back to where it only would normally only need
+height==1, then run gfs2_convert, it gets into trouble. That's
+because you have a small file size, which calculates a much smaller
+number of GFS2 pointers needed, due to the truncation. Function
+fix_metatree will ensure at least one level of indirection by
+unstuffing the converted dinode, but we need to start pushing out
+the pointers onto the dinode's buffer, and for that, we need to
+calculate the right header size.
+
+rhbz#888053
+---
+ gfs2/convert/gfs2_convert.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/gfs2/convert/gfs2_convert.c b/gfs2/convert/gfs2_convert.c
+index 8427326..7610c6b 100644
+--- a/gfs2/convert/gfs2_convert.c
++++ b/gfs2/convert/gfs2_convert.c
+@@ -342,7 +342,8 @@ static void fix_metatree(struct gfs2_sbd *sbp, struct gfs2_inode *ip,
+ 			gfs2_meta_header_out(&mh, bh);
+ 		}
+ 
+-		hdrsize = sizeof(struct gfs2_meta_header);
++		hdrsize = blk->height ? sizeof(struct gfs2_meta_header) :
++			sizeof(struct gfs2_dinode);
+ 
+ 		if (amount > sbp->bsize - hdrsize - ptramt)
+ 			amount = sbp->bsize - hdrsize - ptramt;
+-- 
+1.7.11.7
+

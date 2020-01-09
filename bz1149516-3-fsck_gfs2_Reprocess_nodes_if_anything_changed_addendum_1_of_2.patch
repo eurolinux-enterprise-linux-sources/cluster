@@ -1,0 +1,318 @@
+commit 9b64bf4d044d835d5c203e7ce8fbb5a683f84867
+Author: Abhi Das <adas@redhat.com>
+Date:   Thu Jan 15 14:22:36 2015 -0600
+
+    fsck.gfs2: Reprocess nodes if anything changed - addendum 1 of 2
+    
+    Before this patch, fsck.gfs2 called "reprocess_inode" in several
+    places, especially when the number of blocks had changed from the
+    original. That works in almost all cases. However, there's a corner
+    case where a block may be deleted, due to errors (for example, a
+    bad directory leaf), and another block takes its place. In that
+    case the count of the number of blocks is still the same, but the
+    inode should be reprocessed anyway, because the deleted blocks
+    and replacement blocks may be at different locations or maybe of
+    different types. A hash table block may be "data" when it's freed,
+    but if the block is reused, it may be repurposed as a "leaf" block.
+    That may confuse subsequent processing. Another reason to call
+    reprocess_inode is when the goal block changes to a value outside
+    the resource group, due to block allocations for repairs.
+    
+    This patch is part 1 of 2 addendum fixes to make fsck fix i_goal
+    values correctly. The original two patches to fix this problem were
+    checked in against bz 1149516 as well. The complete fix contains
+    those two patches (de32500, 7933984) and this two-patch addendum
+    for a total of 4 patches.
+    
+    Resolves: rhbz#1149516
+    Signed-off-by: Bob Peterson <rpeterso@redhat.com>
+
+diff --git a/gfs2/fsck/lost_n_found.c b/gfs2/fsck/lost_n_found.c
+index c8265a2..ed4d35e 100644
+--- a/gfs2/fsck/lost_n_found.c
++++ b/gfs2/fsck/lost_n_found.c
+@@ -171,7 +171,6 @@ void make_sure_lf_exists(struct gfs2_inode *ip)
+ int add_inode_to_lf(struct gfs2_inode *ip){
+ 	char tmp_name[256];
+ 	__be32 inode_type;
+-	uint64_t lf_blocks;
+ 	struct gfs2_sbd *sdp = ip->i_sbd;
+ 	int err = 0;
+ 	uint32_t mode;
+@@ -181,7 +180,6 @@ int add_inode_to_lf(struct gfs2_inode *ip){
+ 		log_err( _("Trying to add lost+found to itself...skipping"));
+ 		return 0;
+ 	}
+-	lf_blocks = lf_dip->i_di.di_blocks;
+ 
+ 	if (sdp->gfs1)
+ 		mode = gfs_to_gfs2_mode(ip);
+@@ -239,10 +237,6 @@ int add_inode_to_lf(struct gfs2_inode *ip){
+ 			 tmp_name, strerror(errno));
+ 		exit(FSCK_ERROR);
+ 	}
+-	/* If the lf directory had new blocks added we have to mark them
+-	   properly in the bitmap so they're not freed. */
+-	if (lf_dip->i_di.di_blocks != lf_blocks)
+-		reprocess_inode(lf_dip, "lost+found");
+ 
+ 	/* This inode is linked from lost+found */
+ 	incr_link_count(ip->i_di.di_num, lf_dip, _("from lost+found"));
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index 075c2e1..8dc59fb 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -1578,11 +1578,11 @@ int check_dir(struct gfs2_sbd *sdp, uint64_t block, struct metawalk_fxns *pass)
+ {
+ 	struct gfs2_inode *ip;
+ 	int error = 0;
+-	uint64_t cur_blks;
++	struct alloc_state as;
+ 
+ 	ip = fsck_load_inode(sdp, block);
+ 
+-	cur_blks = ip->i_di.di_blocks;
++	astate_save(ip, &as);
+ 
+ 	if (ip->i_di.di_flags & GFS2_DIF_EXHASH)
+ 		error = check_leaf_blks(ip, pass);
+@@ -1592,7 +1592,7 @@ int check_dir(struct gfs2_sbd *sdp, uint64_t block, struct metawalk_fxns *pass)
+ 	if (error < 0)
+ 		stack;
+ 
+-	if (ip->i_di.di_blocks != cur_blks)
++	if (astate_changed(ip, &as))
+ 		reprocess_inode(ip, _("Current"));
+ 
+ 	fsck_inode_put(&ip); /* does a brelse */
+diff --git a/gfs2/fsck/pass2.c b/gfs2/fsck/pass2.c
+index 2125233..dd030ce 100644
+--- a/gfs2/fsck/pass2.c
++++ b/gfs2/fsck/pass2.c
+@@ -1,3 +1,4 @@
++
+ #include <dirent.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -1708,7 +1709,8 @@ build_it:
+ static int check_system_dir(struct gfs2_inode *sysinode, const char *dirname,
+ 		     int builder(struct gfs2_sbd *sdp))
+ {
+-	uint64_t iblock = 0, cur_blks;
++	uint64_t iblock = 0;
++	struct alloc_state as;
+ 	struct dir_status ds = {0};
+ 	char *filename;
+ 	int filename_len;
+@@ -1723,14 +1725,14 @@ static int check_system_dir(struct gfs2_inode *sysinode, const char *dirname,
+ 	}
+ 	pass2_fxns.private = (void *) &ds;
+ 	if (ds.q == gfs2_bad_block) {
+-		cur_blks = sysinode->i_di.di_blocks;
++		astate_save(sysinode, &as);
+ 		/* First check that the directory's metatree is valid */
+ 		error = check_metatree(sysinode, &pass2_fxns);
+ 		if (error < 0) {
+ 			stack;
+ 			return error;
+ 		}
+-		if (sysinode->i_di.di_blocks != cur_blks)
++		if (astate_changed(sysinode, &as))
+ 			reprocess_inode(sysinode, _("System inode"));
+ 	}
+ 	error = check_dir(sysinode->i_sbd, iblock, &pass2_fxns);
+@@ -1751,7 +1753,7 @@ static int check_system_dir(struct gfs2_inode *sysinode, const char *dirname,
+ 	if (!ds.dotdir) {
+ 		log_err( _("No '.' entry found for %s directory.\n"), dirname);
+ 		if (query( _("Is it okay to add '.' entry? (y/n) "))) {
+-			cur_blks = sysinode->i_di.di_blocks;
++			astate_save(sysinode, &as);
+ 			sprintf(tmp_name, ".");
+ 			filename_len = strlen(tmp_name); /* no trailing NULL */
+ 			if (!(filename = malloc(sizeof(char) * filename_len))) {
+@@ -1778,7 +1780,7 @@ static int check_system_dir(struct gfs2_inode *sysinode, const char *dirname,
+ 				free(filename);
+ 				return -errno;
+ 			}
+-			if (cur_blks != sysinode->i_di.di_blocks)
++			if (astate_changed(sysinode, &as))
+ 				reprocess_inode(sysinode, dirname);
+ 			/* This system inode is linked to itself via '.' */
+ 			incr_link_count(sysinode->i_di.di_num, sysinode,
+@@ -1861,7 +1863,8 @@ static inline int is_system_dir(struct gfs2_sbd *sdp, uint64_t block)
+  */
+ int pass2(struct gfs2_sbd *sdp)
+ {
+-	uint64_t dirblk, cur_blks;
++	uint64_t dirblk;
++	struct alloc_state as;
+ 	uint8_t q;
+ 	struct dir_status ds = {0};
+ 	struct gfs2_inode *ip;
+@@ -1931,14 +1934,14 @@ int pass2(struct gfs2_sbd *sdp)
+ 			/* First check that the directory's metatree
+ 			 * is valid */
+ 			ip = fsck_load_inode(sdp, dirblk);
+-			cur_blks = ip->i_di.di_blocks;
++			astate_save(ip, &as);
+ 			error = check_metatree(ip, &pass2_fxns);
+ 			fsck_inode_put(&ip);
+ 			if (error < 0) {
+ 				stack;
+ 				return error;
+ 			}
+-			if (ip->i_di.di_blocks != cur_blks)
++			if (astate_changed(ip, &as))
+ 				reprocess_inode(ip, "current");
+ 		}
+ 		error = check_dir(sdp, dirblk, &pass2_fxns);
+@@ -2015,7 +2018,7 @@ int pass2(struct gfs2_sbd *sdp)
+ 				}
+ 				memcpy(filename, tmp_name, filename_len);
+ 
+-				cur_blks = ip->i_di.di_blocks;
++				astate_save(ip, &as);
+ 				error = dir_add(ip, filename, filename_len,
+ 						&(ip->i_di.di_num),
+ 						(sdp->gfs1 ? GFS_FILE_DIR :
+@@ -2025,7 +2028,7 @@ int pass2(struct gfs2_sbd *sdp)
+ 					        filename, strerror(errno));
+ 					return -errno;
+ 				}
+-				if (cur_blks != ip->i_di.di_blocks) {
++				if (astate_changed(ip, &as)) {
+ 					char dirname[80];
+ 
+ 					sprintf(dirname, _("Directory at %lld "
+diff --git a/gfs2/fsck/pass3.c b/gfs2/fsck/pass3.c
+index 6a6305a..0b1a60a 100644
+--- a/gfs2/fsck/pass3.c
++++ b/gfs2/fsck/pass3.c
+@@ -20,7 +20,7 @@ static int attach_dotdot_to(struct gfs2_sbd *sdp, uint64_t newdotdot,
+ 	char *filename;
+ 	int filename_len, err;
+ 	struct gfs2_inode *ip, *pip;
+-	uint64_t cur_blks;
++	struct alloc_state as;
+ 
+ 	ip = fsck_load_inode(sdp, block);
+ 	pip = fsck_load_inode(sdp, newdotdot);
+@@ -51,7 +51,7 @@ static int attach_dotdot_to(struct gfs2_sbd *sdp, uint64_t newdotdot,
+ 		log_warn( _("Unable to remove \"..\" directory entry.\n"));
+ 	else
+ 		decr_link_count(olddotdot, block, _("old \"..\""));
+-	cur_blks = ip->i_di.di_blocks;
++	astate_save(ip, &as);
+ 	err = dir_add(ip, filename, filename_len, &pip->i_di.di_num,
+ 		      (sdp->gfs1 ? GFS_FILE_DIR : DT_DIR));
+ 	if (err) {
+@@ -59,7 +59,7 @@ static int attach_dotdot_to(struct gfs2_sbd *sdp, uint64_t newdotdot,
+ 		        filename, strerror(errno));
+ 		exit(FSCK_ERROR);
+ 	}
+-	if (cur_blks != ip->i_di.di_blocks) {
++	if (astate_changed(ip, &as)) {
+ 		char dirname[80];
+ 
+ 		sprintf(dirname, _("Directory at %lld (0x%llx)"),
+@@ -192,6 +192,7 @@ int pass3(struct gfs2_sbd *sdp)
+ 	struct dir_info *di, *tdi;
+ 	struct gfs2_inode *ip;
+ 	uint8_t q;
++	struct alloc_state lf_as = {.as_blocks = 0, .as_meta_goal = 0};
+ 
+ 	di = dirtree_find(sdp->md.rooti->i_di.di_num.no_addr);
+ 	if (di) {
+@@ -238,6 +239,8 @@ int pass3(struct gfs2_sbd *sdp)
+ 	 */
+ 	log_info( _("Checking directory linkage.\n"));
+ 	for (tmp = osi_first(&dirtree); tmp; tmp = next) {
++		if (lf_dip && lf_as.as_blocks == 0)
++			astate_save(lf_dip, &lf_as);
+ 		next = osi_next(tmp);
+ 		di = (struct dir_info *)tmp;
+ 		while (!di->checked) {
+@@ -340,8 +343,14 @@ int pass3(struct gfs2_sbd *sdp)
+ 			break;
+ 		}
+ 	}
+-	if (lf_dip)
++	if (lf_dip) {
++		/* If the lf directory had new blocks added we have to mark
++		   them properly in the blockmap so they're not freed. */
++		if (astate_changed(lf_dip, &lf_as))
++			reprocess_inode(lf_dip, "lost+found");
++		
+ 		log_debug( _("At end of pass3, lost+found entries is %u\n"),
+ 				  lf_dip->i_di.di_entries);
++	}
+ 	return FSCK_OK;
+ }
+diff --git a/gfs2/fsck/pass4.c b/gfs2/fsck/pass4.c
+index 4605671..36fc38a 100644
+--- a/gfs2/fsck/pass4.c
++++ b/gfs2/fsck/pass4.c
+@@ -45,12 +45,15 @@ static int scan_inode_list(struct gfs2_sbd *sdp) {
+ 	struct gfs2_inode *ip;
+ 	int lf_addition = 0;
+ 	uint8_t q;
++	struct alloc_state lf_as = {.as_blocks = 0, .as_meta_goal = 0};
+ 
+ 	/* FIXME: should probably factor this out into a generic
+ 	 * scanning fxn */
+ 	for (tmp = osi_first(&inodetree); tmp; tmp = next) {
+ 		if (skip_this_pass || fsck_abort) /* if asked to skip the rest */
+ 			return 0;
++		if (lf_dip && lf_as.as_blocks == 0)
++			astate_save(lf_dip, &lf_as);
+ 		next = osi_next(tmp);
+ 		if (!(ii = (struct inode_info *)tmp)) {
+ 			log_crit( _("osi_tree broken in scan_info_list!!\n"));
+@@ -179,6 +182,9 @@ static int scan_inode_list(struct gfs2_sbd *sdp) {
+ 			 (unsigned long long)ii->di_num.no_addr, ii->di_nlink);
+ 	} /* osi_list_foreach(tmp, list) */
+ 
++	if (lf_dip && astate_changed(lf_dip, &lf_as))
++		reprocess_inode(lf_dip, "lost+found");
++
+ 	if (lf_addition) {
+ 		if (!(ii = inodetree_find(lf_dip->i_di.di_num.no_addr))) {
+ 			log_crit( _("Unable to find lost+found inode in inode_hash!!\n"));
+diff --git a/gfs2/fsck/util.h b/gfs2/fsck/util.h
+index fe3fd6a..04ab1e2 100644
+--- a/gfs2/fsck/util.h
++++ b/gfs2/fsck/util.h
+@@ -12,6 +12,11 @@
+ #define INODE_VALID 1
+ #define INODE_INVALID 0
+ 
++struct alloc_state {
++	uint64_t as_blocks;
++	uint64_t as_meta_goal;
++};
++
+ struct di_info *search_list(osi_list_t *list, uint64_t addr);
+ void big_file_comfort(struct gfs2_inode *ip, uint64_t blks_checked);
+ void warm_fuzzy_stuff(uint64_t block);
+@@ -23,6 +28,21 @@ extern void dup_listent_delete(struct duptree *dt, struct inode_with_dups *id);
+ 
+ extern const char *reftypes[ref_types + 1];
+ 
++static inline void astate_save(struct gfs2_inode *ip, struct alloc_state *as)
++{
++	as->as_blocks = ip->i_di.di_blocks;
++	as->as_meta_goal = ip->i_di.di_goal_meta;
++}
++
++static inline int astate_changed(struct gfs2_inode *ip, struct alloc_state *as)
++{
++	if (as->as_blocks != ip->i_di.di_blocks)
++		return 1;
++	if (as->as_meta_goal != ip->i_di.di_goal_meta)
++		return 1;
++	return 0;
++}
++
+ static inline uint8_t block_type(uint64_t bblock)
+ {
+ 	static unsigned char *byte;

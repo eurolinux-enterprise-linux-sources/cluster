@@ -1,0 +1,63 @@
+commit 9b917c047a4ceafc6b15994bdd5a9bd13120173b
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Fri Jan 6 14:14:29 2012 -0600
+
+    fsck.gfs2: system dinodes take priority over user
+     dinodes
+    
+    In testing fsck.gfs2 I noticed some incorrect behavior: If a block
+    was referenced incorrectly by two dinodes, fsck deleted which
+    ever reference it found first.  Therefore, if a system dinode
+    and a user dinode referenced the same block, fsck.gfs2 could
+    mistakenly delete the system dinode.  For example, a journal could
+    get deleted because a user dinode improperly referenced one of its
+    blocks.  This patch gives priority to system dinodes when resolving
+    duplicates.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/pass1b.c b/gfs2/fsck/pass1b.c
+index b7be683..da71f99 100644
+--- a/gfs2/fsck/pass1b.c
++++ b/gfs2/fsck/pass1b.c
+@@ -483,7 +483,14 @@ static int resolve_dup_references(struct gfs2_sbd *sdp, struct duptree *b,
+ 				continue; /* don't delete the dinode */
+ 			}
+ 		}
+-
++		/* If this reference is from a system inode, for example, if
++		   it's data or metadata inside a journal, the reference
++		   should take priority over user dinodes that reference the
++		   block. */
++		if (!found_good_ref && fsck_system_inode(sdp, id->block_no)) {
++			found_good_ref = 1;
++			continue; /* don't delete the dinode */
++		}
+ 		log_warn( _("Inode %s (%lld/0x%llx) references block "
+ 			    "%llu (0x%llx) as '%s', but the block is "
+ 			    "really %s.\n"),
+diff --git a/gfs2/fsck/util.c b/gfs2/fsck/util.c
+index 69bf328..0be86de 100644
+--- a/gfs2/fsck/util.c
++++ b/gfs2/fsck/util.c
+@@ -280,8 +280,18 @@ int add_duplicate_ref(struct gfs2_inode *ip, uint64_t block,
+ 		   inode reference list otherwise put it on the normal list. */
+ 		if (!inode_valid || q == gfs2_inode_invalid)
+ 			osi_list_add_prev(&id->list, &dt->ref_invinode_list);
+-		else
+-			osi_list_add_prev(&id->list, &dt->ref_inode_list);
++		else {
++			/* If this is a system dinode, we want the duplicate
++			   processing to find it first. That way references
++			   from inside journals, et al, will take priority.
++			   We don't want to delete journals in favor of dinodes
++			   that reference a block inside a journal. */
++			if (fsck_system_inode(ip->i_sbd, id->block_no))
++				osi_list_add(&id->list, &dt->ref_inode_list);
++			else
++				osi_list_add_prev(&id->list,
++						  &dt->ref_inode_list);
++		}
+ 	}
+ 	id->reftypecount[reftype]++;
+ 	id->dup_count++;

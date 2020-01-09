@@ -1,0 +1,35 @@
+commit 1fe763e8bf06428a75b9c2be71b8e1d1d0b5ad47
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Mon Jul 15 14:01:16 2013 -0500
+
+    fsck.gfs2: Fix infinite loop in pass1b caused by duplicates in hash table
+    
+    If directory leaf blocks appeared more than once in a directory hash
+    table, the duplicate references would be flagged as a duplicate,
+    but since the duplicates were all from the same directory dinode,
+    pass1b would not realize it needed to stop. This patch changes the
+    criteria for duplicate processing so that it stops when the references
+    are down to a single dinode, not a single reference. This allows
+    it to get beyond pass1b so that the problem can be fixed by the hash
+    table checking code in pass2.
+    
+    rhbz#984085
+
+diff --git a/gfs2/fsck/pass1b.c b/gfs2/fsck/pass1b.c
+index e15d6b2..401ee80 100644
+--- a/gfs2/fsck/pass1b.c
++++ b/gfs2/fsck/pass1b.c
+@@ -366,11 +366,11 @@ static int handle_dup_blk(struct gfs2_sbd *sdp, struct duptree *dt)
+ 	/* If there's still a last remaining reference, and it's a valid
+ 	   reference, use it to determine the correct block type for our
+ 	   blockmap and bitmap. */
+-	if (dh.ref_count == 1 && !osi_list_empty(&dt->ref_inode_list)) {
++	if (dh.ref_inode_count == 1 && !osi_list_empty(&dt->ref_inode_list)) {
+ 		uint8_t q;
+ 
+ 		log_notice( _("Block %llu (0x%llx) has only one remaining "
+-			      "valid reference.\n"),
++			      "valid inode referencing it.\n"),
+ 			    (unsigned long long)dup_blk,
+ 			    (unsigned long long)dup_blk);
+ 		/* If we're down to a single reference (and not all references

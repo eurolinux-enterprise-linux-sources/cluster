@@ -1,0 +1,33 @@
+commit c899e38f3dd412dd2f8263a301805312f54fbb60
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Tue Sep 6 08:41:32 2011 +0200
+
+    cman: fix multicast address in cman.5 man page
+    
+    Resolves: rhbz#735906
+    
+    Acked-by: Christine Caulfield <ccaulfie@redhat.com>
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/cman/man/cman.5 b/cman/man/cman.5
+index a4dbcfd..84c86be 100644
+--- a/cman/man/cman.5
++++ b/cman/man/cman.5
+@@ -104,7 +104,7 @@ Note that if you are using the DLM with cman/corosync then you MUST tell it
+ to use SCTP as it's communications protocol as TCP does not support multihoming.
+ 
+   <clusternode name="nd1" nodeid="1"> 
+-     <altname name="nd1a" port="6809" mcast="229.192.0.2"/>
++     <altname name="nd1a" port="6809" mcast="239.192.0.2"/>
+   </clusternode>
+ 
+   <dlm protocol="sctp"/>
+@@ -125,7 +125,7 @@ It is possible to override the multicast address by specifying it in cluster.con
+ as shown:
+ 
+   <cman>
+-      <multicast addr="229.192.0.1"/>
++      <multicast addr="239.192.0.1"/>
+   </cman>
+ 
+ .in -7

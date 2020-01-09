@@ -1,0 +1,25 @@
+commit edd283ff46a06f774f2033b54eef853ae67caf07
+Author: Christine Caulfield <ccaulfie@redhat.com>
+Date:   Tue Feb 19 15:19:59 2013 +0000
+
+    fenced: Fix path to "two_node" in ccs
+    
+    The path in the previous two_node patch was incorrect, it should have been:
+    
+    Thanks to John Ruemker for spotting this
+    
+    Signed-off-by: Christine Caulfield <ccaulfie@redhat.com>
+
+diff --git a/fence/fenced/config.c b/fence/fenced/config.c
+index 651ea8b..1b9a3e0 100644
+--- a/fence/fenced/config.c
++++ b/fence/fenced/config.c
+@@ -95,7 +95,7 @@ void read_ccs_int(const char *path, int *config_val)
+ #define OVERRIDE_PATH_PATH "/cluster/fence_daemon/@override_path"
+ #define OVERRIDE_TIME_PATH "/cluster/fence_daemon/@override_time"
+ #define METHOD_NAME_PATH "/cluster/clusternodes/clusternode[@name=\"%s\"]/fence/method[%d]/@name"
+-#define TWO_NODE_PATH "/cluster/cman/two_node"
++#define TWO_NODE_PATH "/cluster/cman/@two_node"
+ 
+ static int count_methods(char *victim)
+ {

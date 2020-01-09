@@ -1,0 +1,80 @@
+commit 43729045dbdf085af140885b6af582851bf521f1
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Thu Feb 21 09:36:01 2013 -0700
+
+    libgfs2: let dir_split_leaf receive a "broken" lindex
+    
+    For ordinary leaf blocks, the hash table must follow the rules,
+    which means it needs to follow a power-of-two boundary. In other
+    words, it needs to enforce that: start = (lindex & ~(len - 1));
+    But when doing repairs, fsck will need to detect when hash tables
+    violate this rule and fix it. In that case, it may need to pass
+    in an invalid starting offset for a leaf to split. This patch
+    moves the responsibility for checking the starting block to the
+    calling function.
+    
+    rhbz#902920
+
+diff --git a/gfs2/libgfs2/fs_ops.c b/gfs2/libgfs2/fs_ops.c
+index f88c48f..690d8dd 100644
+--- a/gfs2/libgfs2/fs_ops.c
++++ b/gfs2/libgfs2/fs_ops.c
+@@ -865,13 +865,13 @@ void gfs2_put_leaf_nr(struct gfs2_inode *dip, uint32_t inx, uint64_t leaf_out)
+ 		die("gfs2_put_leaf_nr:  Bad internal write.\n");
+ }
+ 
+-void dir_split_leaf(struct gfs2_inode *dip, uint32_t lindex, uint64_t leaf_no,
++void dir_split_leaf(struct gfs2_inode *dip, uint32_t start, uint64_t leaf_no,
+ 		    struct gfs2_buffer_head *obh)
+ {
+ 	struct gfs2_buffer_head *nbh;
+ 	struct gfs2_leaf *nleaf, *oleaf;
+ 	struct gfs2_dirent *dent, *prev = NULL, *next = NULL, *new;
+-	uint32_t start, len, half_len, divider;
++	uint32_t len, half_len, divider;
+ 	uint64_t bn, *lp;
+ 	uint32_t name_len;
+ 	int x, moved = FALSE;
+@@ -897,8 +897,6 @@ void dir_split_leaf(struct gfs2_inode *dip, uint32_t lindex, uint64_t leaf_no,
+ 	len = 1 << (dip->i_di.di_depth - be16_to_cpu(oleaf->lf_depth));
+ 	half_len = len >> 1;
+ 
+-	start = (lindex & ~(len - 1));
+-
+ 	lp = calloc(1, half_len * sizeof(uint64_t));
+ 	if (lp == NULL) {
+ 		fprintf(stderr, "Out of memory in %s\n", __FUNCTION__);
+@@ -1091,7 +1089,7 @@ static int dir_e_add(struct gfs2_inode *dip, const char *filename, int len,
+ 	struct gfs2_buffer_head *bh, *nbh;
+ 	struct gfs2_leaf *leaf, *nleaf;
+ 	struct gfs2_dirent *dent;
+-	uint32_t lindex;
++	uint32_t lindex, llen;
+ 	uint32_t hash;
+ 	uint64_t leaf_no, bn;
+ 	int err = 0;
+@@ -1113,7 +1111,10 @@ restart:
+ 		if (dirent_alloc(dip, bh, len, &dent)) {
+ 
+ 			if (be16_to_cpu(leaf->lf_depth) < dip->i_di.di_depth) {
+-				dir_split_leaf(dip, lindex, leaf_no, bh);
++				llen = 1 << (dip->i_di.di_depth -
++					     be16_to_cpu(leaf->lf_depth));
++				dir_split_leaf(dip, lindex & ~(llen - 1),
++					       leaf_no, bh);
+ 				brelse(bh);
+ 				goto restart;
+ 
+diff --git a/gfs2/libgfs2/libgfs2.h b/gfs2/libgfs2/libgfs2.h
+index 8354a14..d5de337 100644
+--- a/gfs2/libgfs2/libgfs2.h
++++ b/gfs2/libgfs2/libgfs2.h
+@@ -400,7 +400,7 @@ extern void block_map(struct gfs2_inode *ip, uint64_t lblock, int *new,
+ extern void gfs2_get_leaf_nr(struct gfs2_inode *dip, uint32_t index,
+ 			     uint64_t *leaf_out);
+ extern void gfs2_put_leaf_nr(struct gfs2_inode *dip, uint32_t inx, uint64_t leaf_out);
+-extern void dir_split_leaf(struct gfs2_inode *dip, uint32_t lindex,
++extern void dir_split_leaf(struct gfs2_inode *dip, uint32_t start,
+ 			   uint64_t leaf_no, struct gfs2_buffer_head *obh);
+ extern void gfs2_free_block(struct gfs2_sbd *sdp, uint64_t block);
+ extern int gfs2_freedi(struct gfs2_sbd *sdp, uint64_t block);

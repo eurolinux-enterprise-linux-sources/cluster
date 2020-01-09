@@ -1,0 +1,74 @@
+commit 8c4b34b4afcb4b51d927f5e2dfebeb0a60ece4cb
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Wed Apr 3 09:47:31 2013 -0700
+
+    fsck.gfs2: check for duplicate first references
+    
+    Before this patch, fsck.gfs2 could get into situations where it's
+    in pass1b searching for the first reference to a block that it knows
+    has been referenced twice. However, for one reason or another, the
+    first reference has been deleted. It may seem unlikely because pass1
+    tries to "undo" its references when it deletes a bad dinode. But
+    it can still happen, for example, when pass1b decides to delete a
+    dinode because of a _different_ duplicate reference within the same
+    dinode. If the first reference was deleted prior to searching for the
+    original reference, pass1b won't find the original reference. So
+    prior to this patch, it would just keep on looking, until it found
+    the second reference. In other words, it would mistake the second
+    reference for the first reference. Then it would get confused and
+    treat the reference as a duplicate of itself. Later, it would choose
+    which reference to delete, and delete its dinode. But since they're
+    the same reference, it could delete a dinode with a perfectly good
+    reference (the first invalid reference having already been deleted).
+    
+    The solution that this patch implements is to check if the first
+    reference we found is actually the second reference, and if so,
+    treat it as a first reference. That way, it avoids creating a
+    second duplicate reference structure, and later when it resolves
+    the references, it finds there's only one, and it doesn't need to
+    delete the valid dinode.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/util.c b/gfs2/fsck/util.c
+index 2111684..48c4b33 100644
+--- a/gfs2/fsck/util.c
++++ b/gfs2/fsck/util.c
+@@ -248,6 +248,28 @@ int add_duplicate_ref(struct gfs2_inode *ip, uint64_t block,
+ 	if (dt->first_ref_found)
+ 		return meta_is_good;
+ 
++	/* Check for a previous reference to this duplicate */
++	id = find_dup_ref_inode(dt, ip);
++
++	/* We have to be careful here. The original referencing dinode may have
++	   deemed to be bad and deleted/freed in pass1. In that case, pass1b
++	   wouldn't discover the correct [deleted] original reference. In
++	   that case, we don't want to be confused and consider this second
++	   reference the same as the first. If we do, we'll never be able to
++	   resolve it. The first reference can't be the second reference. */
++	if (id && first && !dt->first_ref_found) {
++		log_info(_("Original reference to block %llu (0x%llx) was "
++			   "previously found to be bad and deleted.\n"),
++			 (unsigned long long)block,
++			 (unsigned long long)block);
++		log_info(_("I'll consider the reference from inode %llu "
++			   "(0x%llx) the first reference.\n"),
++			 (unsigned long long)ip->i_di.di_num.no_addr,
++			 (unsigned long long)ip->i_di.di_num.no_addr);
++		dt->first_ref_found = 1;
++		return meta_is_good;
++	}
++
+ 	/* The first time this is called from pass1 is actually the second
+ 	   reference.  When we go back in pass1b looking for the original
+ 	   reference, we don't want to increment the reference count because
+@@ -259,8 +281,6 @@ int add_duplicate_ref(struct gfs2_inode *ip, uint64_t block,
+ 		dt->refs++;
+ 	}
+ 
+-	/* Check for a previous reference to this duplicate */
+-	id = find_dup_ref_inode(dt, ip);
+ 	if (id == NULL) {
+ 		/* Check for the inode on the invalid inode reference list. */
+ 		uint8_t q;

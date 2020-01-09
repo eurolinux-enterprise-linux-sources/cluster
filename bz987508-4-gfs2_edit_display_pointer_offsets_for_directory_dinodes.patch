@@ -1,0 +1,23 @@
+commit d5dda8f8cda9fb1b32ec17dc1fcd3b196073e8aa
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Fri Feb 1 14:54:34 2013 -0700
+
+    gfs2_edit: display pointer offsets for directory dinodes
+    
+    This patch prints "pointer X" on the hex display for directory
+    dinodes like it does for indirect blocks.
+
+diff --git a/gfs2/edit/hexedit.c b/gfs2/edit/hexedit.c
+index cd3ed63..9b9a599 100644
+--- a/gfs2/edit/hexedit.c
++++ b/gfs2/edit/hexedit.c
+@@ -1416,7 +1416,8 @@ static int hexdump(uint64_t startaddr, int len)
+ 		if (cursor_line) {
+ 			if (block_type == GFS2_METATYPE_IN ||
+ 			    ((block_type == GFS2_METATYPE_DI) &&
+-			     ((struct gfs2_dinode*)bh->b_data)->di_height)) {
++			     ((struct gfs2_dinode*)bh->b_data)->di_height) ||
++			     S_ISDIR(di.di_mode)) {
+ 				int ptroffset = edit_row[dmode] * 16 +
+ 					edit_col[dmode];
+ 

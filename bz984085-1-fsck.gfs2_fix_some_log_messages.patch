@@ -1,0 +1,34 @@
+commit a0d660b55db19beac73840aa4e43457737e07e11
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Mon Jul 15 13:43:43 2013 -0500
+
+    fsck.gfs2: fix some log messages
+    
+    This patch fixes two messages: First, there's a place where it was
+    supposed to print a value in hexadecimal, but it printed in decimal.
+    Second, there's a place where it failed to print a newline.
+    
+    rhbz#984085
+
+diff --git a/gfs2/fsck/pass2.c b/gfs2/fsck/pass2.c
+index 4b3efd9..a9ccac1 100644
+--- a/gfs2/fsck/pass2.c
++++ b/gfs2/fsck/pass2.c
+@@ -1421,7 +1421,7 @@ static int check_hash_tbl(struct gfs2_inode *ip, uint64_t *tbl,
+ 				continue;
+ 
+ 			log_err(_("Dinode %llu (0x%llx) has a hash table "
+-				  "inconsistency at index %d (0x%d) for %d\n"),
++				  "inconsistency at index %d (0x%x) for %d\n"),
+ 				(unsigned long long)ip->i_di.di_num.no_addr,
+ 				(unsigned long long)ip->i_di.di_num.no_addr,
+ 				i, i, len);
+@@ -1440,7 +1440,7 @@ static int check_hash_tbl(struct gfs2_inode *ip, uint64_t *tbl,
+ 			proper_len = 1 << (ip->i_di.di_depth - leaf.lf_depth);
+ 			if (proper_len != len) {
+ 				log_debug(_("Length 0x%x is not proper for "
+-					    "leaf %llu (0x%llx): 0x%x"),
++					    "leaf %llu (0x%llx): 0x%x\n"),
+ 					  len, (unsigned long long)leafblk,
+ 					  (unsigned long long)leafblk,
+ 					  proper_len);

@@ -1,0 +1,211 @@
+commit 6739cf6a6cc6c24d20d58f68acdc6d886bff01e7
+Author: Abhi Das <adas@redhat.com>
+Date:   Tue Mar 25 22:08:40 2014 -0500
+
+    gfs2-utils: check and fix bad dinode pointers in gfs1 sb
+    
+    This patch makes gfs2_convert check for bad values of sb_seg_size,
+    sb_quota_di and sb_license_di.
+    
+    In fsck.gfs2, attempts are made to correct these erroneous values.
+    This v2 patch checks with the user before making changes to the
+    superblock in fsck.gfs2 and also adds some error messaging as per
+    Bob's comments.
+    
+    Resolves: rhbz#1053668
+    Signed-off-by: Abhi Das <adas@redhat.com>
+
+diff --git a/gfs2/convert/gfs2_convert.c b/gfs2/convert/gfs2_convert.c
+index 9594908..bf3f49b 100644
+--- a/gfs2/convert/gfs2_convert.c
++++ b/gfs2/convert/gfs2_convert.c
+@@ -1473,6 +1473,24 @@ static int read_gfs1_jiindex(struct gfs2_sbd *sdp)
+ 	return -1;
+ }
+ 
++static int sanity_check(struct gfs2_sbd *sdp)
++{
++	int error = 0;
++	if (!raw_gfs1_ondisk_sb.sb_quota_di.no_addr) {
++		log_crit("Error: Superblock Quota inode address is NULL\n");
++		error = 1;
++	}
++	if (!raw_gfs1_ondisk_sb.sb_license_di.no_addr) {
++		log_crit("Error: Superblock Statfs inode address is NULL\n");
++		error = 1;
++	}
++	if (!raw_gfs1_ondisk_sb.sb_seg_size) {
++		log_crit("Error: Superblock segment size is zero\n");
++		error = 1;
++	}
++	return error;
++}
++
+ /* ------------------------------------------------------------------------- */
+ /* init - initialization code                                                */
+ /* Returns: 0 on success, -1 on failure                                      */
+@@ -2068,6 +2086,17 @@ int main(int argc, char **argv)
+ 	process_parameters(argc, argv, &opts);
+ 	error = init(&sb2);
+ 
++	/*
++	 * Check for some common fs errors
++	 */
++	if (!error) {
++		if (sanity_check(&sb2)) {
++			log_crit("%s is not a clean gfs filesytem. Please use the"
++				   " fsck.gfs2 utility to correct these errors and"
++				   " try again.\n", device);
++			exit(0);
++		}
++	}
+ 	/* ---------------------------------------------- */
+ 	/* Make them seal their fate.                     */
+ 	/* ---------------------------------------------- */
+diff --git a/gfs2/fsck/initialize.c b/gfs2/fsck/initialize.c
+index 789af2c..9abdf0c 100644
+--- a/gfs2/fsck/initialize.c
++++ b/gfs2/fsck/initialize.c
+@@ -718,9 +718,25 @@ static int init_system_inodes(struct gfs2_sbd *sdp)
+ 		sdp->md.next_inum = be64_to_cpu(inumbuf);
+ 	}
+ 
+-	if (sdp->gfs1)
++	if (sdp->gfs1) {
++		/* In gfs1, the license_di is always 3 blocks after the jindex_di */
++		if ((sbd1->sb_license_di.no_addr != sbd1->sb_jindex_di.no_addr + 3) ||
++		    (sbd1->sb_license_di.no_formal_ino != sbd1->sb_jindex_di.no_addr + 3)) {
++			if (!query( _("The gfs system statfs inode pointer is incorrect. "
++				      "Okay to correct? (y/n) "))) {
++				log_err( _("fsck.gfs2 cannot continue without a valid "
++					   "statfs file; aborting.\n"));
++				goto fail;
++			}
++			sbd1->sb_license_di.no_addr = sbd1->sb_license_di.no_formal_ino
++				= sbd1->sb_jindex_di.no_addr + 3;
++		}
+ 		sdp->md.statfs = inode_read(sdp, sbd1->sb_license_di.no_addr);
+-	else
++		if (sdp->md.statfs == NULL) {
++			log_crit(_("Error reading statfs inode: %s\n"), strerror(errno));
++			goto fail;
++		}
++	} else
+ 		gfs2_lookupi(sdp->master_dir, "statfs", 6, &sdp->md.statfs);
+ 	if (!sdp->gfs1 && !sdp->md.statfs) {
+ 		if (!query( _("The gfs2 system statfs inode is missing. "
+@@ -760,9 +776,26 @@ static int init_system_inodes(struct gfs2_sbd *sdp)
+ 		}
+ 	}
+ 
+-	if (sdp->gfs1)
++	if (sdp->gfs1) {
++		/* In gfs1, the quota_di is always 2 blocks after the jindex_di */
++		if ((sbd1->sb_quota_di.no_addr != sbd1->sb_jindex_di.no_addr + 2) ||
++		    (sbd1->sb_quota_di.no_formal_ino != sbd1->sb_jindex_di.no_addr + 2)) {
++			if (!query( _("The gfs system quota inode pointer is incorrect. "
++				      " Okay to correct? (y/n) "))) {
++				log_err( _("fsck.gfs2 cannot continue without a valid "
++					   "quota file; aborting.\n"));
++				goto fail;
++			}
++			sbd1->sb_quota_di.no_addr = sbd1->sb_quota_di.no_formal_ino
++				= sbd1->sb_jindex_di.no_addr + 2;
++		}
++
+ 		sdp->md.qinode = inode_read(sdp, sbd1->sb_quota_di.no_addr);
+-	else
++		if (sdp->md.qinode == NULL) {
++			log_crit(_("Error reading quota inode: %s\n"), strerror(errno));
++			goto fail;
++		}
++	} else
+ 		gfs2_lookupi(sdp->master_dir, "quota", 5, &sdp->md.qinode);
+ 	if (!sdp->gfs1 && !sdp->md.qinode) {
+ 		if (!query( _("The gfs2 system quota inode is missing. "
+@@ -1322,7 +1355,72 @@ static int reconstruct_single_journal(struct gfs2_sbd *sdp, int jnum,
+ 	return 0;
+ }
+ 
++static int reset_journal_seg_size(unsigned int jsize, unsigned int nsegs,
++				  unsigned int bsize)
++{
++	unsigned int seg_size = jsize / (nsegs * bsize);
++	if (!seg_size)
++		seg_size = 16; /* The default with 128MB journal and 4K bsize */
++	if (seg_size != sbd1->sb_seg_size) {
++		sbd1->sb_seg_size = seg_size;
++		if (!query(_("Computed correct journal segment size to %u."
++			     " Reset it? (y/n) "), seg_size)) {
++			log_crit(_("Error: Cannot proceed without a valid journal"
++				   " segment size value.\n"));
++			return -1;
++		}
++		log_err(_("Resetting journal segment size to %u\n"), sbd1->sb_seg_size);
++	}
++	return 0;
++}
++
++static int correct_journal_seg_size(struct gfs2_sbd *sdp)
++{
++	int count;
++	struct gfs_jindex ji_0, ji_1;
++	char buf[sizeof(struct gfs_jindex)];
++	unsigned int jsize = GFS2_DEFAULT_JSIZE * 1024 * 1024;
++
++	count = gfs2_readi(sdp->md.jiinode, buf, 0, sizeof(struct gfs_jindex));
++	if (count != sizeof(struct gfs_jindex)) {
++		log_crit(_("Error %d reading system journal index inode. "
++			   "Aborting\n"), count);
++		return -1;
++	}
++	gfs_jindex_in(&ji_0, buf);
++	
++	if (sdp->md.journals == 1) {
++		if (sbd1->sb_seg_size == 0) {
++			if (!query(_("The gfs2 journal segment size is 0 and a"
++				     " correct value cannot be determined in a"
++				     " single-journal filesystem.\n"
++				     "Continue with default? (y/n) "))) {
++				log_crit(_("Error: Cannot proceed without a valid"
++					   "sb_seg_size value.\n"));
++				return -1;
++			}
++			goto out;
++		}
++		/* Don't mess with sb_seg_size because we don't know what
++		 * it needs to be
++		 */
++		return 0;
++	}
++
++	count = gfs2_readi(sdp->md.jiinode, buf, sizeof(struct gfs_jindex),
++			   sizeof(struct gfs_jindex));
++	if (count != sizeof(struct gfs_jindex)) {
++		log_crit(_("Error %d reading system journal index inode. "
++			   "Aborting\n"), count);
++		return -1;
++	}
++	gfs_jindex_in(&ji_1, buf);
+ 
++	jsize = (ji_1.ji_addr - ji_0.ji_addr) * sbd1->sb_bsize;
++out:
++	return reset_journal_seg_size(jsize, ji_0.ji_nsegment, sbd1->sb_bsize);
++}
++ 
+ /*
+  * reconstruct_journals - write fresh journals for GFS1 only
+  * sdp: the super block
+@@ -1335,6 +1433,12 @@ static int reconstruct_journals(struct gfs2_sbd *sdp)
+ 	struct gfs_jindex ji;
+ 	char buf[sizeof(struct gfs_jindex)];
+ 
++	/* Ensure that sb_seg_size is valid */
++	if (correct_journal_seg_size(sdp)) {
++		log_crit(_("Failed to set correct journal segment size. Cannot continue\n"));
++		return -1;
++	}
++
+ 	log_err("Clearing GFS journals (this may take a while)\n");
+ 	for (i = 0; i < sdp->md.journals; i++) {
+ 		count = gfs2_readi(sdp->md.jiinode, buf,

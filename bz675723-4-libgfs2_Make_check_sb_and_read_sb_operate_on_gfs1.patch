@@ -1,0 +1,310 @@
+commit b4565c3899603a1ad8a920cded8a50770cbdc449
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Fri Aug 12 14:46:22 2011 -0500
+
+    libgfs2: Make check_sb and read_sb operate on gfs1
+    
+    This patch adds "allow_gfs1" parameters to the read_sb and check_sb functions.
+    This will allow gfs2-utils to read and operate on gfs1 file systems in
+    follow-up patches.
+    
+    rhbz#675723
+
+diff --git a/gfs2/edit/savemeta.c b/gfs2/edit/savemeta.c
+index c4719ea..665af07 100644
+--- a/gfs2/edit/savemeta.c
++++ b/gfs2/edit/savemeta.c
+@@ -628,7 +628,7 @@ static int next_rg_freemeta(struct gfs2_sbd *sdp, struct rgrp_list *rgd,
+ 
+ void savemeta(char *out_fn, int saveoption, int gziplevel)
+ {
+-	int slow;
++	int slow, ret;
+ 	osi_list_t *tmp;
+ 	int rgcount;
+ 	uint64_t jindex_block;
+@@ -666,26 +666,13 @@ void savemeta(char *out_fn, int saveoption, int gziplevel)
+ 			fprintf(stderr, "Bad constants (1)\n");
+ 			exit(-1);
+ 		}
+-		if(sbd.gfs1) {
+-			sbd.bsize = sbd.sd_sb.sb_bsize;
+-			sbd.sd_inptrs = (sbd.bsize -
+-					 sizeof(struct gfs_indirect)) /
+-				sizeof(uint64_t);
+-			sbd.sd_diptrs = (sbd.bsize -
+-					  sizeof(struct gfs_dinode)) /
+-				sizeof(uint64_t);
+-		} else {
+-			if (read_sb(&sbd) < 0)
+-				slow = TRUE;
+-			else {
+-				sbd.sd_inptrs = (sbd.bsize -
+-					 sizeof(struct gfs2_meta_header)) /
+-					sizeof(uint64_t);
+-				sbd.sd_diptrs = (sbd.bsize -
+-					  sizeof(struct gfs2_dinode)) /
+-					sizeof(uint64_t);
+-			}
++		ret = read_sb(&sbd, 1);
++		if (ret < 0) {
++			slow = TRUE;
++			sbd.gfs1 = 0;
+ 		}
++		if (sbd.gfs1)
++			sbd.bsize = sbd.sd_sb.sb_bsize;
+ 	}
+ 	last_fs_block = lseek(sbd.device_fd, 0, SEEK_END) / sbd.bsize;
+ 	printf("There are %" PRIu64 " blocks of %u bytes in the destination "
+@@ -910,20 +897,19 @@ static int restore_data(int fd, gzFile *gzin_fd, int printblocksonly,
+ 		}
+ 		if (first) {
+ 			struct gfs2_sb bufsb;
++			int ret;
+ 
+ 			dummy_bh.b_data = (char *)&bufsb;
+ 			memcpy(&bufsb, savedata->buf, sizeof(bufsb));
+ 			gfs2_sb_in(&sbd.sd_sb, &dummy_bh);
+ 			sbd1 = (struct gfs_sb *)&sbd.sd_sb;
+-			if (sbd1->sb_fs_format == GFS_FORMAT_FS &&
+-			    sbd1->sb_header.mh_type == GFS_METATYPE_SB &&
+-			    sbd1->sb_header.mh_format == GFS_FORMAT_SB &&
+-			    sbd1->sb_multihost_format == GFS_FORMAT_MULTI) {
+-				sbd.gfs1 = TRUE;
+-			} else if (check_sb(&sbd.sd_sb)) {
++			ret = check_sb(&sbd.sd_sb, 1);
++			if (ret < 0) {
+ 				fprintf(stderr,"Error: Invalid superblock data.\n");
+ 				return -1;
+ 			}
++			if (ret == 1)
++				sbd.gfs1 = TRUE;
+ 			sbd.bsize = sbd.sd_sb.sb_bsize;
+ 			if (find_highblk)
+ 				;
+diff --git a/gfs2/fsck/initialize.c b/gfs2/fsck/initialize.c
+index 6b5bfec..29e4560 100644
+--- a/gfs2/fsck/initialize.c
++++ b/gfs2/fsck/initialize.c
+@@ -1074,7 +1074,7 @@ static int fill_super_block(struct gfs2_sbd *sdp)
+ 		log_crit(_("Bad constants (1)\n"));
+ 		exit(-1);
+ 	}
+-	if (read_sb(sdp) < 0) {
++	if (read_sb(sdp, 0) < 0) {
+ 		/* First, check for a gfs1 (not gfs2) file system */
+ 		if (sdp->sd_sb.sb_header.mh_magic == GFS2_MAGIC &&
+ 		    sdp->sd_sb.sb_header.mh_type == GFS2_METATYPE_SB)
+@@ -1083,7 +1083,7 @@ static int fill_super_block(struct gfs2_sbd *sdp)
+ 		if (sb_repair(sdp) != 0)
+ 			return -1; /* unrepairable, so exit */
+ 		/* Now that we've tried to repair it, re-read it. */
+-		if (read_sb(sdp) < 0)
++		if (read_sb(sdp, 0) < 0)
+ 			return -1;
+ 	}
+ 
+diff --git a/gfs2/fsck/util.c b/gfs2/fsck/util.c
+index adca24a..2645a55 100644
+--- a/gfs2/fsck/util.c
++++ b/gfs2/fsck/util.c
+@@ -27,7 +27,7 @@ void big_file_comfort(struct gfs2_inode *ip, uint64_t blks_checked)
+ 	if (blks_checked - last_reported_fblock < one_percent)
+ 		return;
+ 
+-	last_reported_block = blks_checked;
++	last_reported_fblock = blks_checked;
+ 	gettimeofday(&tv, NULL);
+ 	if (!seconds)
+ 		seconds = tv.tv_sec;
+@@ -62,7 +62,8 @@ void warm_fuzzy_stuff(uint64_t block)
+ 
+ 	if (!one_percent)
+ 		one_percent = last_fs_block / 100;
+-	if (block - last_reported_block >= one_percent) {
++	if (!last_reported_block ||
++	    block - last_reported_block >= one_percent) {
+ 		last_reported_block = block;
+ 		gettimeofday(&tv, NULL);
+ 		if (!seconds)
+diff --git a/gfs2/libgfs2/libgfs2.h b/gfs2/libgfs2/libgfs2.h
+index 9c79959..6db9d6c 100644
+--- a/gfs2/libgfs2/libgfs2.h
++++ b/gfs2/libgfs2/libgfs2.h
+@@ -489,7 +489,29 @@ extern int write_journal(struct gfs2_sbd *sdp, unsigned int j,
+ 
+ extern int device_size(int fd, uint64_t *bytes);
+ 
+-/* gfs1.c - GFS1 backward compatibility functions */
++/* gfs1.c - GFS1 backward compatibility structures and functions */
++
++#define GFS_FORMAT_SB           (100)  /* Super-Block */
++#define GFS_METATYPE_SB         (1)    /* Super-Block */
++#define GFS_FORMAT_FS           (1309) /* Filesystem (all-encompassing) */
++#define GFS_FORMAT_MULTI        (1401) /* Multi-Host */
++/* GFS1 Dinode types  */
++#define GFS_FILE_NON            (0)
++#define GFS_FILE_REG            (1)    /* regular file */
++#define GFS_FILE_DIR            (2)    /* directory */
++#define GFS_FILE_LNK            (5)    /* link */
++#define GFS_FILE_BLK            (7)    /* block device node */
++#define GFS_FILE_CHR            (8)    /* character device node */
++#define GFS_FILE_FIFO           (101)  /* fifo/pipe */
++#define GFS_FILE_SOCK           (102)  /* socket */
++
++/* GFS 1 journal block types: */
++#define GFS_LOG_DESC_METADATA   (300)    /* metadata */
++#define GFS_LOG_DESC_IUL        (400)    /* unlinked inode */
++#define GFS_LOG_DESC_IDA        (401)    /* de-allocated inode */
++#define GFS_LOG_DESC_Q          (402)    /* quota */
++#define GFS_LOG_DESC_LAST       (500)    /* final in a logged transaction */
++
+ struct gfs_indirect {
+ 	struct gfs2_meta_header in_header;
+ 
+@@ -673,8 +695,8 @@ extern int gfs2_next_rg_meta(struct rgrp_list *rgd, uint64_t *block,
+ extern int gfs2_next_rg_metatype(struct gfs2_sbd *sdp, struct rgrp_list *rgd,
+ 				 uint64_t *block, uint32_t type, int first);
+ /* super.c */
+-extern int check_sb(struct gfs2_sb *sb);
+-extern int read_sb(struct gfs2_sbd *sdp);
++extern int check_sb(struct gfs2_sb *sb, int allow_gfs);
++extern int read_sb(struct gfs2_sbd *sdp, int allow_gfs);
+ extern int rindex_read(struct gfs2_sbd *sdp, int fd, int *count1, int *sane);
+ extern int ri_update(struct gfs2_sbd *sdp, int fd, int *rgcount, int *sane);
+ extern int write_sb(struct gfs2_sbd *sdp);
+diff --git a/gfs2/libgfs2/super.c b/gfs2/libgfs2/super.c
+index f2dd171..7c9f395 100644
+--- a/gfs2/libgfs2/super.c
++++ b/gfs2/libgfs2/super.c
+@@ -18,9 +18,9 @@
+  * read and that the sizes of the various on-disk structures have not
+  * changed.
+  *
+- * Returns: 0 on success, -1 on failure
++ * Returns: -1 on failure, 1 if this is gfs (gfs1), 2 if this is gfs2
+  */
+-int check_sb(struct gfs2_sb *sb)
++int check_sb(struct gfs2_sb *sb, int allow_gfs)
+ {
+ 	if (sb->sb_header.mh_magic != GFS2_MAGIC ||
+ 	    sb->sb_header.mh_type != GFS2_METATYPE_SB) {
+@@ -31,13 +31,16 @@ int check_sb(struct gfs2_sb *sb)
+ 				  sb->sb_header.mh_type);
+ 		return -EINVAL;
+ 	}
+-	/*  If format numbers match exactly, we're done.  */
+-	if (sb->sb_fs_format != GFS2_FORMAT_FS ||
+-	    sb->sb_multihost_format != GFS2_FORMAT_MULTI) {
++	if (sb->sb_fs_format == GFS_FORMAT_FS &&
++	    sb->sb_header.mh_format == GFS_FORMAT_SB &&
++	    sb->sb_multihost_format == GFS_FORMAT_MULTI) {
++		if (allow_gfs)
++			return 1;
++
+ 		log_crit("Old gfs1 file system detected.\n");
+ 		return -EINVAL;
+ 	}
+-	return 0;
++	return 2;
+ }
+ 
+ 
+@@ -49,31 +52,44 @@ int check_sb(struct gfs2_sb *sb)
+  * initializes various constants maintained in the super
+  * block
+  *
+- * Returns: 0 on success, -1 on failure.
++ * allow_gfs - passed in as 1 if we're allowed to accept gfs1 file systems
++ *
++ * Returns: 0 on success, -1 on failure
++ * sdp->gfs1 will be set if this is gfs (gfs1)
+  */
+-int read_sb(struct gfs2_sbd *sdp)
++int read_sb(struct gfs2_sbd *sdp, int allow_gfs)
+ {
+ 	struct gfs2_buffer_head *bh;
+ 	uint64_t space = 0;
+ 	unsigned int x;
+-	int error;
++	int ret;
+ 
+ 	bh = bread(sdp, GFS2_SB_ADDR >> sdp->sd_fsb2bb_shift);
+ 	gfs2_sb_in(&sdp->sd_sb, bh);
+ 	brelse(bh);
+ 
+-	error = check_sb(&sdp->sd_sb);
+-	if (error)
+-		goto out;
+-
++	ret = check_sb(&sdp->sd_sb, allow_gfs);
++	if (ret < 0)
++		return ret;
++	if (ret == 1)
++		sdp->gfs1 = 1;
+ 	sdp->sd_fsb2bb_shift = sdp->sd_sb.sb_bsize_shift - GFS2_BASIC_BLOCK_SHIFT;
+ 	sdp->bsize = sdp->sd_sb.sb_bsize;
+-	sdp->sd_diptrs =
+-		(sdp->sd_sb.sb_bsize-sizeof(struct gfs2_dinode)) /
+-		sizeof(uint64_t);
+-	sdp->sd_inptrs =
+-		(sdp->sd_sb.sb_bsize-sizeof(struct gfs2_meta_header)) /
+-		sizeof(uint64_t);
++	if (sdp->gfs1) {
++		sdp->sd_diptrs = (sdp->sd_sb.sb_bsize -
++				  sizeof(struct gfs_dinode)) /
++			sizeof(uint64_t);
++		sdp->sd_inptrs = (sdp->sd_sb.sb_bsize -
++				  sizeof(struct gfs_indirect)) /
++			sizeof(uint64_t);
++	} else {
++		sdp->sd_diptrs = (sdp->sd_sb.sb_bsize -
++				  sizeof(struct gfs2_dinode)) /
++			sizeof(uint64_t);
++		sdp->sd_inptrs = (sdp->sd_sb.sb_bsize -
++				  sizeof(struct gfs2_meta_header)) /
++			sizeof(uint64_t);
++	}
+ 	sdp->sd_jbsize = sdp->sd_sb.sb_bsize - sizeof(struct gfs2_meta_header);
+ 	sdp->sd_hash_bsize = sdp->bsize / 2;
+ 	sdp->sd_hash_bsize_shift = sdp->sd_sb.sb_bsize_shift - 1;
+@@ -90,8 +106,7 @@ int read_sb(struct gfs2_sbd *sdp)
+ 	}
+ 	if (x > GFS2_MAX_META_HEIGHT){
+ 		log_err("Bad max metadata height.\n");
+-		error = -1;
+-		goto out;
++		return -1;
+ 	}
+ 
+ 	sdp->sd_jheightsize[0] = sdp->sd_sb.sb_bsize - sizeof(struct gfs2_dinode);
+@@ -106,14 +121,12 @@ int read_sb(struct gfs2_sbd *sdp)
+ 	sdp->sd_max_jheight = x;
+ 	if(sdp->sd_max_jheight > GFS2_MAX_META_HEIGHT) {
+ 		log_err("Bad max jheight.\n");
+-		error = -1;
++		return -1;
+ 	}
+ 	sdp->fssize = lseek(sdp->device_fd, 0, SEEK_END) / sdp->sd_sb.sb_bsize;
+ 	sdp->sb_addr = GFS2_SB_ADDR * GFS2_BASIC_BLOCK / sdp->bsize;
+ 
+- out:
+-
+-	return error;
++	return 0;
+ }
+ 
+ /**
+diff --git a/gfs2/mkfs/main_grow.c b/gfs2/mkfs/main_grow.c
+index 18110a0..a28bdc3 100644
+--- a/gfs2/mkfs/main_grow.c
++++ b/gfs2/mkfs/main_grow.c
+@@ -352,7 +352,7 @@ main_grow(int argc, char *argv[])
+ 			log_crit(_("Bad constants (1)\n"));
+ 			exit(-1);
+ 		}
+-		if(read_sb(sdp) < 0)
++		if (read_sb(sdp, 0) < 0)
+ 			die( _("gfs: Error reading superblock.\n"));
+ 
+ 		if (fix_device_geometry(sdp)) {

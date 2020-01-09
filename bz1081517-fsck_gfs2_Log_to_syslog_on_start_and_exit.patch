@@ -1,0 +1,88 @@
+commit 3edb19cd844028885baa643d7b118860b2e7a186
+Author: Andrew Price <anprice@redhat.com>
+Date:   Tue May 6 15:59:39 2014 +0100
+
+    fsck.gfs2: Log to syslog on start and exit
+    
+    In order to piece together the order in which fsck.gfs2 runs and
+    gfs2_edit savemeta were done it's useful to keep a log of the command
+    line options used and the fsck.gfs2 start and end times and exit status.
+    Log these to syslog.
+    
+    Resolves: rhbz#1081517
+    
+    Signed-off-by: Andrew Price <anprice@redhat.com>
+
+diff --git a/gfs2/fsck/main.c b/gfs2/fsck/main.c
+index 5259bae..85e6775 100644
+--- a/gfs2/fsck/main.c
++++ b/gfs2/fsck/main.c
+@@ -10,6 +10,7 @@
+ #include <libintl.h>
+ #include <locale.h>
+ #define _(String) gettext(String)
++#include <syslog.h>
+ 
+ #include "copyright.cf"
+ #include "libgfs2.h"
+@@ -223,6 +224,36 @@ static void check_statfs(struct gfs2_sbd *sdp)
+ 	errors_corrected++;
+ }
+ 
++static void exitlog(int status, void *unused)
++{
++	syslog(LOG_INFO, "exit: %d", status);
++}
++
++static void startlog(int argc, char **argv)
++{
++	int i;
++	char *cmd, *p;
++	size_t len;
++
++	for (len = i = 0; i < argc; i++)
++		len += strlen(argv[i]);
++	len += argc; /* Add spaces and '\0' */
++
++	cmd = malloc(len);
++	if (cmd == NULL) {
++		perror(argv[0]);
++		exit(FSCK_ERROR);
++	}
++	p = cmd;
++	for (i = 0; i < argc; i++, p++) {
++		p = stpcpy(p, argv[i]);
++		*p = ' ';
++	}
++	*(--p) = '\0';
++	syslog(LOG_INFO, "started: %s", cmd);
++	free(cmd);
++}
++
+ int main(int argc, char **argv)
+ {
+ 	struct gfs2_sbd sb;
+@@ -234,6 +265,10 @@ int main(int argc, char **argv)
+ 	setlocale(LC_ALL, "");
+ 	textdomain("gfs2-utils");
+ 
++	openlog("fsck.gfs2", LOG_CONS|LOG_PID, LOG_USER);
++	startlog(argc - 1, &argv[1]);
++	on_exit(exitlog, NULL);
++
+ 	memset(sdp, 0, sizeof(*sdp));
+ 
+ /* 	brdfp = fopen("brd-log.txt", "w"); */
+diff --git a/gfs2/man/fsck.gfs2.8 b/gfs2/man/fsck.gfs2.8
+index 3ecfbe3..56dcddc 100644
+--- a/gfs2/man/fsck.gfs2.8
++++ b/gfs2/man/fsck.gfs2.8
+@@ -35,6 +35,8 @@ computer.  Therefore, fsck.gfs2 will always check the file system unless
+ the -p (preen) option is used, in which case it follows special rules
+ (see below).
+ 
++fsck.gfs2 will log to the system log on start and exit to aid debugging and
++administration.
+ .SH OPTIONS
+ .TP
+ \fB-a\fP

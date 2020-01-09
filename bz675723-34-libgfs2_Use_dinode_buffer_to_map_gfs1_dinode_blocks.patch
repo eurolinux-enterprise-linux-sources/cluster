@@ -1,0 +1,31 @@
+commit e411d72a57ee6b8e720db6e49c8de58a2b4d3501
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Wed Aug 10 10:33:49 2011 -0500
+
+    libgfs2: Use dinode buffer to map gfs1 dinode blocks
+    
+    When function gfs1_block_map found a block for a stuffed file it
+    wasn't returning the dinode buffer, it was returning the block as a
+    new buffer.  The problem is, if changes are made to the block, they
+    will be overwritten by the dinode buffer when that is released.
+    The result is a fixed block that doesn't get fixed.  This patch
+    changes the code to return the block properly like gfs2_block_map.
+    
+    rhbz#675723
+
+diff --git a/gfs2/libgfs2/gfs1.c b/gfs2/libgfs2/gfs1.c
+index 59eaa8d..2ace124 100644
+--- a/gfs2/libgfs2/gfs1.c
++++ b/gfs2/libgfs2/gfs1.c
+@@ -118,7 +118,10 @@ void gfs1_block_map(struct gfs2_inode *ip, uint64_t lblock, int *new,
+ 			mh.mh_format = GFS2_FORMAT_IN;
+ 			gfs2_meta_header_out(&mh, bh);
+ 		} else {
+-			bh = bread(sdp, *dblock);
++			if (*dblock == ip->i_di.di_num.no_addr)
++				bh = ip->i_bh;
++			else
++				bh = bread(sdp, *dblock);
+ 		}
+ 	}
+ 

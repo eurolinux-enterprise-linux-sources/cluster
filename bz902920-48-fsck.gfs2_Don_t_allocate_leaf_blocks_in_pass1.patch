@@ -1,0 +1,130 @@
+commit bf9a851204b747f850a3a95a907cd8101bc2b726
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Wed Apr 17 14:09:30 2013 -0700
+
+    fsck.gfs2: Don't allocate leaf blocks in pass1
+    
+    Before this patch, if leaf blocks were found to be corrupt, pass1
+    tried to fix them by allocating new leaf blocks in place of the bad
+    ones. That's a bad idea, because pass1 populates the blockmap and
+    sets the bitmap accordingly. In other words, it's dynamically changing.
+    Say, for example, that you're checking a directory a dinode 0x1234, and
+    it has a corrupt hash table, and needs new leaf blocks inserted.
+    Now suppose you have a second directory that occurs later in the bitmap,
+    say at block 0x2345, and it references leaf block 0x2346, but for some
+    reason that block (0x2346) is improperly set to "free" in the bitmap.
+    If pass1 goes out looking for a free block in order to allocate a new
+    leaf for 0x1234, it will naturally find block 0x2346, because it's
+    marked free. It writes a new leaf at that block and adds a new
+    reference in the hash table of 0x1234. Later, when pass1 processes
+    directory 0x2345, it discovers the reference to 0x2346. Not only has
+    it wiped out the perfectly good leaf block, it has also created a
+    duplicate block reference that it needs to sort out in pass1b, which
+    will likely keep the replaced reference and throw the good one we
+    had. Thus, we introduced corruption into the file system when we
+    should have kept the only good reference to 0x2346 and fixed the
+    bitmap.
+    
+    The solution provided by this patch is to simply zero out the bad
+    hash table entries when pass1 comes across them. Later, when pass2
+    discovers the zero leaf blocks, it can safely allocate new blocks
+    (since pass1 synced the bitmap according to the blockmap) for the new
+    leaf blocks and replace the zeros with valid block references.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index 37b2d4b..78047ec 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -1954,7 +1954,7 @@ int write_new_leaf(struct gfs2_inode *dip, int start_lindex, int num_copies,
+  * leaf a bit, but it's better than deleting the whole directory,
+  * which is what used to happen before. */
+ int repair_leaf(struct gfs2_inode *ip, uint64_t *leaf_no, int lindex,
+-		int ref_count, const char *msg)
++		int ref_count, const char *msg, int allow_alloc)
+ {
+ 	int new_leaf_blks = 0, error, refs;
+ 	uint64_t bn = 0;
+@@ -1969,6 +1969,35 @@ int repair_leaf(struct gfs2_inode *ip, uint64_t *leaf_no, int lindex,
+ 		log_err( _("Bad leaf left in place.\n"));
+ 		goto out;
+ 	}
++	if (!allow_alloc) {
++		uint64_t *cpyptr;
++		char *padbuf;
++		int pad_size, i;
++
++		padbuf = malloc(ref_count * sizeof(uint64_t));
++		cpyptr = (uint64_t *)padbuf;
++		for (i = 0; i < ref_count; i++) {
++			*cpyptr = 0;
++			cpyptr++;
++		}
++		pad_size = ref_count * sizeof(uint64_t);
++		log_err(_("Writing zeros to the hash table of directory %lld "
++			  "(0x%llx) at index: 0x%x for 0x%x pointers.\n"),
++			(unsigned long long)ip->i_di.di_num.no_addr,
++			(unsigned long long)ip->i_di.di_num.no_addr,
++			lindex, ref_count);
++		if (ip->i_sbd->gfs1)
++			gfs1_writei(ip, padbuf, lindex * sizeof(uint64_t),
++				    pad_size);
++		else
++			gfs2_writei(ip, padbuf, lindex * sizeof(uint64_t),
++				    pad_size);
++		free(padbuf);
++		log_err( _("Directory Inode %llu (0x%llx) patched.\n"),
++			 (unsigned long long)ip->i_di.di_num.no_addr,
++			 (unsigned long long)ip->i_di.di_num.no_addr);
++		goto out;
++	}
+ 	/* We can only write leafs in quantities that are factors of
+ 	   two, since leaves are doubled, not added sequentially.
+ 	   So if we have a hole that's not a factor of 2, we have to
+diff --git a/gfs2/fsck/metawalk.h b/gfs2/fsck/metawalk.h
+index aacb962..a5a51c2 100644
+--- a/gfs2/fsck/metawalk.h
++++ b/gfs2/fsck/metawalk.h
+@@ -61,7 +61,7 @@ extern int write_new_leaf(struct gfs2_inode *dip, int start_lindex,
+ 			  int num_copies, const char *before_or_after,
+ 			  uint64_t *bn);
+ extern int repair_leaf(struct gfs2_inode *ip, uint64_t *leaf_no, int lindex,
+-		       int ref_count, const char *msg);
++		       int ref_count, const char *msg, int allow_alloc);
+ 
+ #define is_duplicate(dblock) ((dupfind(dblock)) ? 1 : 0)
+ 
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index 2355de2..7208335 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -83,13 +83,8 @@ static int pass1_repair_leaf(struct gfs2_inode *ip, uint64_t *leaf_no,
+ 			     int lindex, int ref_count, const char *msg,
+ 			     void *private)
+ {
+-	struct block_count *bc = (struct block_count *)private;
+-	int new_leaf_blks;
+-
+-	new_leaf_blks = repair_leaf(ip, leaf_no, lindex, ref_count, msg);
+-	bc->indir_count += new_leaf_blks;
+-
+-	return new_leaf_blks;
++	repair_leaf(ip, leaf_no, lindex, ref_count, msg, 0);
++	return 0;
+ }
+ 
+ struct metawalk_fxns pass1_fxns = {
+diff --git a/gfs2/fsck/pass2.c b/gfs2/fsck/pass2.c
+index 02fa577..4b3a5c0 100644
+--- a/gfs2/fsck/pass2.c
++++ b/gfs2/fsck/pass2.c
+@@ -1038,7 +1038,7 @@ static int pass2_repair_leaf(struct gfs2_inode *ip, uint64_t *leaf_no,
+ 			     int lindex, int ref_count, const char *msg,
+ 			     void *private)
+ {
+-	return repair_leaf(ip, leaf_no, lindex, ref_count, msg);
++	return repair_leaf(ip, leaf_no, lindex, ref_count, msg, 1);
+ }
+ 
+ /* The purpose of leafck_fxns is to provide a means for function fix_hashtable

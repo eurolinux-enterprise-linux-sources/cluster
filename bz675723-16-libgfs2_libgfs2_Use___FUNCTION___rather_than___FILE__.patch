@@ -1,0 +1,79 @@
+commit 1de5d9be1718dbf67ddb4e308b27f39d52415384
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Mon Aug 8 16:11:48 2011 -0500
+
+    libgfs2: libgfs2: Use __FUNCTION__ rather than __FILE__
+    
+    This patch changes the debug output of gfs2-utils to use __FUNCTION__
+    rather than __FILE__.  The output file is much smaller.  Digging through
+    a 6.5GB output is better and faster than a 9GB output file.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index 94de22a..dd0b929 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -98,17 +98,10 @@ int _fsck_blockmap_set(struct gfs2_inode *ip, uint64_t bblock,
+ 	int error;
+ 
+ 	if (print_level >= MSG_DEBUG) {
+-		const char *p;
+-
+-		p = strrchr(caller, '/');
+-		if (p)
+-			p++;
+-		else
+-			p = caller;
+ 		/* I'm circumventing the log levels here on purpose to make the
+ 		   output easier to debug. */
+ 		if (ip->i_di.di_num.no_addr == bblock) {
+-			print_fsck_log(MSG_DEBUG, p, fline,
++			print_fsck_log(MSG_DEBUG, caller, fline,
+ 				       _("%s inode found at block %lld "
+ 					 "(0x%llx): marking as '%s'\n"),
+ 				       btype, (unsigned long long)
+@@ -117,7 +110,7 @@ int _fsck_blockmap_set(struct gfs2_inode *ip, uint64_t bblock,
+ 				       ip->i_di.di_num.no_addr,
+ 				       block_type_string(mark));
+ 		} else if (mark == gfs2_bad_block || mark == gfs2_meta_inval) {
+-			print_fsck_log(MSG_DEBUG, p, fline,
++			print_fsck_log(MSG_DEBUG, caller, fline,
+ 				       _("inode %lld (0x%llx) references "
+ 					 "%s block %lld (0x%llx): "
+ 					 "marking as '%s'\n"),
+@@ -129,7 +122,7 @@ int _fsck_blockmap_set(struct gfs2_inode *ip, uint64_t bblock,
+ 				       (unsigned long long)bblock,
+ 				       block_type_string(mark));
+ 		} else {
+-			print_fsck_log(MSG_DEBUG, p, fline,
++			print_fsck_log(MSG_DEBUG, caller, fline,
+ 				       _("inode %lld (0x%llx) references "
+ 					 "%s block %lld (0x%llx): "
+ 					 "marking as '%s'\n"),
+diff --git a/gfs2/fsck/metawalk.h b/gfs2/fsck/metawalk.h
+index c15d7b7..d705726 100644
+--- a/gfs2/fsck/metawalk.h
++++ b/gfs2/fsck/metawalk.h
+@@ -39,7 +39,7 @@ extern struct gfs2_inode *fsck_system_inode(struct gfs2_sbd *sdp,
+ #define is_duplicate(dblock) ((dupfind(dblock)) ? 1 : 0)
+ 
+ #define fsck_blockmap_set(ip, b, bt, m) _fsck_blockmap_set(ip, b, bt, m, \
+-							   __FILE__, __LINE__)
++							   __FUNCTION__, __LINE__)
+ 
+ /* metawalk_fxns: function pointers to check various parts of the fs
+  *
+diff --git a/gfs2/libgfs2/libgfs2.h b/gfs2/libgfs2/libgfs2.h
+index 0ddb48f..9bae01b 100644
+--- a/gfs2/libgfs2/libgfs2.h
++++ b/gfs2/libgfs2/libgfs2.h
+@@ -693,7 +693,7 @@ extern int print_level;
+ #define MSG_NULL        1
+ 
+ #define print_log(priority, format...) \
+-	do { print_fsck_log(priority, __FILE__, __LINE__, ## format); } while(0)
++	do { print_fsck_log(priority, __FUNCTION__, __LINE__, ## format); } while(0)
+ 
+ #define log_debug(format...) \
+ 	do { if(print_level >= MSG_DEBUG) print_log(MSG_DEBUG, format); } while(0)

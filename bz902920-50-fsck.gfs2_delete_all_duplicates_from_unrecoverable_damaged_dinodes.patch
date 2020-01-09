@@ -1,0 +1,180 @@
+commit 4a662b42cd19598f3a2d7e8b4a15306489baccd8
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Tue May 14 09:51:28 2013 -0500
+
+    fsck.gfs2: delete all duplicates from unrecoverable damaged dinodes
+    
+    When pass1 encounters a dinode with unrecoverable damage, it tries
+    to "undo" the metadata and data block designations it marked in the
+    blockmap prior to finding the damage. That's all fine, but if the
+    damaged dinode has a duplicate reference, we also need to delete that
+    from the duplicate reference list. Otherwise pass1b may try to
+    resolve the duplicate reference and reinstate the damaged dinode.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index 1d56490..84366a2 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -1529,6 +1529,11 @@ undo_metalist:
+ 				brelse(bh);
+ 		}
+ 	}
++	/* There may be leftover duplicate records, so we need to delete them.
++	   For example, if a metadata block was found to be a duplicate, we
++	   may not have added it to the metalist, which means it's not there
++	   to undo. */
++	delete_all_dups(ip);
+ 	/* Set the dinode as "bad" so it gets deleted */
+ 	fsck_blockmap_set(ip, ip->i_di.di_num.no_addr,
+ 			  _("corrupt"), gfs2_block_free);
+diff --git a/gfs2/fsck/pass1b.c b/gfs2/fsck/pass1b.c
+index 224a5d0..e15d6b2 100644
+--- a/gfs2/fsck/pass1b.c
++++ b/gfs2/fsck/pass1b.c
+@@ -50,66 +50,6 @@ static void log_inode_reference(struct duptree *dt, osi_list_t *tmp, int inval)
+ }
+ 
+ /* delete_all_dups - delete all duplicate records for a given inode */
+-static void delete_all_dups(struct gfs2_inode *ip)
+-{
+-	struct osi_node *n, *next;
+-	struct duptree *dt;
+-	osi_list_t *tmp, *x;
+-	struct inode_with_dups *id;
+-	int found;
+-
+-	for (n = osi_first(&dup_blocks); n; n = next) {
+-		next = osi_next(n);
+-		dt = (struct duptree *)n;
+-
+-		found = 0;
+-		id = NULL;
+-
+-		osi_list_foreach_safe(tmp, &dt->ref_invinode_list, x) {
+-			id = osi_list_entry(tmp, struct inode_with_dups, list);
+-			if (id->block_no == ip->i_di.di_num.no_addr) {
+-				dup_listent_delete(dt, id);
+-				found = 1;
+-			}
+-		}
+-		osi_list_foreach_safe(tmp, &dt->ref_inode_list, x) {
+-			id = osi_list_entry(tmp, struct inode_with_dups, list);
+-			if (id->block_no == ip->i_di.di_num.no_addr) {
+-				dup_listent_delete(dt, id);
+-				found = 1;
+-			}
+-		}
+-		if (!found)
+-			continue;
+-
+-		if (dt->refs == 0) {
+-			log_debug(_("This was the last reference: 0x%llx is "
+-				    "no longer a duplicate.\n"),
+-				  (unsigned long long)dt->block);
+-			dup_delete(dt); /* not duplicate now */
+-		} else {
+-			log_debug(_("%d references remain to 0x%llx\n"),
+-				  dt->refs, (unsigned long long)dt->block);
+-			if (dt->refs > 1)
+-				continue;
+-
+-			id = NULL;
+-			osi_list_foreach(tmp, &dt->ref_invinode_list)
+-				id = osi_list_entry(tmp,
+-						    struct inode_with_dups,
+-						    list);
+-			osi_list_foreach(tmp, &dt->ref_inode_list)
+-				id = osi_list_entry(tmp,
+-						    struct inode_with_dups,
+-						    list);
+-			if (id)
+-				log_debug("Last reference is from inode "
+-					  "0x%llx\n",
+-					  (unsigned long long)id->block_no);
+-		}
+-	}
+-}
+-
+ /*
+  * resolve_dup_references - resolve all but the last dinode that has a
+  *                          duplicate reference to a given block.
+diff --git a/gfs2/fsck/util.c b/gfs2/fsck/util.c
+index d4d9034..7ee49be 100644
+--- a/gfs2/fsck/util.c
++++ b/gfs2/fsck/util.c
+@@ -643,3 +643,62 @@ uint64_t *get_dir_hash(struct gfs2_inode *ip)
+ 	return tbl;
+ }
+ 
++void delete_all_dups(struct gfs2_inode *ip)
++{
++	struct osi_node *n, *next;
++	struct duptree *dt;
++	osi_list_t *tmp, *x;
++	struct inode_with_dups *id;
++	int found;
++
++	for (n = osi_first(&dup_blocks); n; n = next) {
++		next = osi_next(n);
++		dt = (struct duptree *)n;
++
++		found = 0;
++		id = NULL;
++
++		osi_list_foreach_safe(tmp, &dt->ref_invinode_list, x) {
++			id = osi_list_entry(tmp, struct inode_with_dups, list);
++			if (id->block_no == ip->i_di.di_num.no_addr) {
++				dup_listent_delete(dt, id);
++				found = 1;
++			}
++		}
++		osi_list_foreach_safe(tmp, &dt->ref_inode_list, x) {
++			id = osi_list_entry(tmp, struct inode_with_dups, list);
++			if (id->block_no == ip->i_di.di_num.no_addr) {
++				dup_listent_delete(dt, id);
++				found = 1;
++			}
++		}
++		if (!found)
++			continue;
++
++		if (dt->refs == 0) {
++			log_debug(_("This was the last reference: 0x%llx is "
++				    "no longer a duplicate.\n"),
++				  (unsigned long long)dt->block);
++			dup_delete(dt); /* not duplicate now */
++		} else {
++			log_debug(_("%d references remain to 0x%llx\n"),
++				  dt->refs, (unsigned long long)dt->block);
++			if (dt->refs > 1)
++				continue;
++
++			id = NULL;
++			osi_list_foreach(tmp, &dt->ref_invinode_list)
++				id = osi_list_entry(tmp,
++						    struct inode_with_dups,
++						    list);
++			osi_list_foreach(tmp, &dt->ref_inode_list)
++				id = osi_list_entry(tmp,
++						    struct inode_with_dups,
++						    list);
++			if (id)
++				log_debug("Last reference is from inode "
++					  "0x%llx\n",
++					  (unsigned long long)id->block_no);
++		}
++	}
++}
+diff --git a/gfs2/fsck/util.h b/gfs2/fsck/util.h
+index 940f500..fe3fd6a 100644
+--- a/gfs2/fsck/util.h
++++ b/gfs2/fsck/util.h
+@@ -183,4 +183,6 @@ extern int gfs2_blockmap_set(struct gfs2_bmap *il, uint64_t block,
+ extern int set_ip_blockmap(struct gfs2_inode *ip, int instree);
+ extern uint64_t find_free_blk(struct gfs2_sbd *sdp);
+ extern uint64_t *get_dir_hash(struct gfs2_inode *ip);
++extern void delete_all_dups(struct gfs2_inode *ip);
++
+ #endif /* __UTIL_H__ */

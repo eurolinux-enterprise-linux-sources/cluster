@@ -1,0 +1,254 @@
+commit a727ea072c9d108301266828d9d10e68c4ca0100
+Author: Steven Whitehouse <swhiteho@redhat.com>
+Date:   Fri Jul 22 10:42:10 2011 +0100
+
+    tunegfs2: Fix label/locktable setting code
+    
+    The code here seemed a bit confused. I've added a check for the
+    format of the locktable/label based on the same code in mkfs.
+    In addition we set the lock proto first in order that we use the
+    new value of the lock proto when checking the format of
+    the lock table.
+    
+    There is no need to have a separate function for setting the
+    label to the locktable, since they are both setting the same
+    data.
+    
+    The on-disk locktable and lockproto always contain trailing
+    NULLs and when we read the sb from disk, we now always add NULLs
+    at the end of the strings so that we can rely on this later on.
+    
+    The patch also checks the size of the lock table when it is
+    set to ensure that it is not too large.
+    
+    Signed-off-by: Steven Whitehouse <swhiteho@redhat.com>
+    Reported-by: Nathan Straz <nstraz@redhat.com>
+    Reviewed-by: Andrew Price <anprice@redhat.com>
+
+diff --git a/gfs2/tune/main.c b/gfs2/tune/main.c
+index 6a0daff..dc9d6a5 100644
+--- a/gfs2/tune/main.c
++++ b/gfs2/tune/main.c
+@@ -20,13 +20,13 @@ struct tunegfs2 tunegfs2_struct;
+ struct tunegfs2 *tfs = &tunegfs2_struct;
+ 
+ 
+-void parse_mount_options(char *arg)
++static void parse_mount_options(char *arg)
+ {
+ 	struct opt_map *m;
+ 	char *s, *c;
+ 	int l;
+ 	struct opt_map {
+-		char *tag;
++		const char *tag;
+ 		int *flag;
+ 		char **val;
+ 	} map[]= {
+@@ -101,6 +101,12 @@ int main(int argc, char **argv)
+ 		return EX_USAGE;
+ 	}
+ 
++	if (tfs->opt_label && tfs->opt_table) {
++		fprintf(stderr, _("The -L and -o locktable= options are mutually exclusive\n"));
++		usage(argv[0]);
++		return EX_USAGE;
++	}
++
+ 	tfs->devicename = argv[optind];
+ 	tfs->fd = open(tfs->devicename, O_RDWR); 
+ 
+@@ -120,29 +126,26 @@ int main(int argc, char **argv)
+ 			goto out;
+ 	}
+ 
+-	/* Keep label and table together because they are the same field
+-	 * in the superblock */
+-
+-	if (tfs->opt_label) {
+-		status = change_label(tfs, tfs->label);
++	if (tfs->opt_proto) {
++		status = change_lockproto(tfs, tfs->proto);
+ 		if (status)
+ 			goto out;
+ 	}
+ 
+-	if (tfs->opt_table) {
+-		status = change_locktable(tfs, tfs->table);
++	if (tfs->opt_label) {
++		status = change_locktable(tfs, tfs->label);
+ 		if (status)
+ 			goto out;
+ 	}
+ 
+-	if (tfs->opt_proto) {
+-		status = change_lockproto(tfs, tfs->proto);
++	if (tfs->opt_table) {
++		status = change_locktable(tfs, tfs->table);
+ 		if (status)
+ 			goto out;
+ 	}
+ 
+-	if (tfs->opt_label || tfs->opt_uuid ||
+-			tfs->opt_table || tfs->opt_proto) {
++	if (tfs->opt_label || tfs->opt_uuid || tfs->opt_table ||
++	    tfs->opt_proto) {
+ 		status = write_super(tfs);
+ 		if (status)
+ 			goto out;
+diff --git a/gfs2/tune/super.c b/gfs2/tune/super.c
+index f02edd6..9b1b901 100644
+--- a/gfs2/tune/super.c
++++ b/gfs2/tune/super.c
+@@ -104,6 +104,9 @@ int read_super(struct tunegfs2 *tfs)
+ 		fprintf(stderr, _("Not a GFS/GFS2 device\n"));
+ 		return EX_IOERR;
+ 	}
++	/* Ensure that table and proto are NULL terminated */
++	tfs->sb->sb_lockproto[GFS2_LOCKNAME_LEN - 1] = '\0';
++	tfs->sb->sb_locktable[GFS2_LOCKNAME_LEN - 1] = '\0';
+ 	return 0;
+ }
+ 
+@@ -114,17 +117,7 @@ static int is_gfs2_format(const struct tunegfs2 *tfs)
+ 
+ int print_super(const struct tunegfs2 *tfs)
+ {
+-	char *fsname = NULL;
+-	int table_len = 0, fsname_len = 0;
+-
+-	fsname = strchr(tfs->sb->sb_locktable, ':');
+-	if (fsname) {
+-		table_len = fsname - tfs->sb->sb_locktable;
+-		fsname_len = GFS2_LOCKNAME_LEN - table_len - 1;
+-		fsname++;
+-	}
+-
+-	printf(_("Filesystem volume name: %.*s\n"), fsname_len, fsname);
++	printf(_("Filesystem volume name: %s\n"), tfs->sb->sb_locktable);
+ 	if (is_gfs2_format(tfs))
+ 		printf(_("Filesystem UUID: %s\n"), uuid2str(tfs->sb->sb_uuid));
+ 	printf( _("Filesystem magic number: 0x%X\n"), be32_to_cpu(tfs->sb->sb_header.mh_magic));
+@@ -133,9 +126,8 @@ int print_super(const struct tunegfs2 *tfs)
+ 	printf(_("Root inode: %llu\n"), (unsigned long long)be64_to_cpu(tfs->sb->sb_root_dir.no_addr));
+ 	if (is_gfs2_format(tfs))
+ 		printf(_("Master inode: %llu\n"), (unsigned long long)be64_to_cpu(tfs->sb->sb_master_dir.no_addr));
+-	printf(_("Lock Protocol: %.*s\n"), GFS2_LOCKNAME_LEN,
+-		tfs->sb->sb_lockproto);
+-	printf(_("Lock table: %.*s\n"), table_len, tfs->sb->sb_locktable);
++	printf(_("Lock Protocol: %s\n"), tfs->sb->sb_lockproto);
++	printf(_("Lock table: %s\n"), tfs->sb->sb_locktable);
+ 
+ 	return 0;
+ }
+@@ -151,26 +143,6 @@ int write_super(const struct tunegfs2 *tfs)
+ 	return 0;
+ }
+ 
+-int change_label(struct tunegfs2 *tfs, const char *fsname)
+-{
+-	char *sb_fsname = NULL;
+-	int l = strlen(fsname), table_len = 0, fsname_len = 0;
+-
+-	sb_fsname = strchr(tfs->sb->sb_locktable, ':');
+-	if (sb_fsname) {
+-		table_len = sb_fsname - tfs->sb->sb_locktable;
+-		fsname_len = GFS2_LOCKNAME_LEN - table_len - 1;
+-		sb_fsname++;
+-	}
+-	if (fsname_len < l) {
+-		fprintf(stderr, _("Label too long\n"));
+-		return EX_DATAERR;
+-	}
+-	memset(sb_fsname, '\0', fsname_len);
+-	memcpy(sb_fsname, fsname, l);
+-	return 0;
+-}
+-
+ int change_uuid(struct tunegfs2 *tfs, const char *str)
+ {
+ 	char uuid[16];
+@@ -186,12 +158,17 @@ int change_uuid(struct tunegfs2 *tfs, const char *str)
+ 	return status;
+ }
+ 
+-
+ int change_lockproto(struct tunegfs2 *tfs, const char *lockproto)
+ {
+ 	int l = strlen(lockproto);
+-	if (strncmp(lockproto, "lock_dlm", 8) 
+-			&& strncmp(lockproto, "lock_nolock", 11)) {
++
++	if (l >= GFS2_LOCKNAME_LEN) {
++		fprintf(stderr, _("Lock protocol name too long\n"));
++		return EX_DATAERR;
++	}
++
++	if (strncmp(lockproto, "lock_dlm", 8) &&
++	    strncmp(lockproto, "lock_nolock", 11)) {
+ 		fprintf(stderr, _("Incorrect lock protocol specified\n"));
+ 		return EX_DATAERR;
+ 	}
+@@ -202,30 +179,28 @@ int change_lockproto(struct tunegfs2 *tfs, const char *lockproto)
+ 
+ int change_locktable(struct tunegfs2 *tfs, const char *locktable)
+ {
+-	char *sb_fsname = NULL;
+-	char t_fsname[GFS2_LOCKNAME_LEN];
+-	int l = strlen(locktable), table_len = 0, fsname_len = 0;
+-
+-	sb_fsname = strchr(tfs->sb->sb_locktable, ':');
+-	if (sb_fsname) {
+-		table_len = sb_fsname - tfs->sb->sb_locktable;
+-		fsname_len = GFS2_LOCKNAME_LEN - table_len - 1;
+-		sb_fsname++;
+-	}
+-	/* Gotta check if the existing fsname will allow us to fit in
+-	 * the new locktable name */
+-	fsname_len = strlen(sb_fsname);
+-	if (fsname_len > GFS2_LOCKNAME_LEN - table_len - 1)
+-		fsname_len = GFS2_LOCKNAME_LEN - table_len - 1;
+-
+-	if (l > GFS2_LOCKNAME_LEN - fsname_len - 1) {
+-		fprintf(stderr, _("Lock table name too big\n"));
++	if (strlen(locktable) >= GFS2_LOCKNAME_LEN) {
++		fprintf(stderr, _("Lock table name too long\n"));
+ 		return EX_DATAERR;
+ 	}
+-	memset(t_fsname, '\0', GFS2_LOCKNAME_LEN);
+-	strncpy(t_fsname, sb_fsname, fsname_len);
+-	memset(tfs->sb->sb_locktable, '\0', GFS2_LOCKNAME_LEN);
+-	sprintf(tfs->sb->sb_locktable, "%s:%s", locktable, t_fsname);
++
++	if (strcmp(tfs->sb->sb_lockproto, "lock_dlm") == 0) {
++		char *fsname = strchr(locktable, ':');
++		if (fsname == NULL) {
++			fprintf(stderr, _("locktable error: mising colon in the locktable\n"));
++			return EX_DATAERR;
++		}
++		if (strlen(++fsname) > 16) {
++			fprintf(stderr, _("locktable error: fsname too long\n"));
++			return EX_DATAERR;
++		}
++		if (strchr(fsname, ':')) {
++			fprintf(stderr, _("locktable error: more than one colon present\n"));
++			return EX_DATAERR;
++		}
++	}
++
++	strcpy(tfs->sb->sb_locktable, locktable);
+ 	return 0;
+ }
+ 
+diff --git a/gfs2/tune/tunegfs2.h b/gfs2/tune/tunegfs2.h
+index 3e2706d..1acebef 100644
+--- a/gfs2/tune/tunegfs2.h
++++ b/gfs2/tune/tunegfs2.h
+@@ -22,7 +22,6 @@ extern int print_super(const struct tunegfs2 *);
+ extern int read_super(struct tunegfs2 *);
+ extern int write_super(const struct tunegfs2 *);
+ extern int change_uuid(struct tunegfs2 *, const char *uuid);
+-extern int change_label(struct tunegfs2 *, const char *label);
+ extern int change_lockproto(struct tunegfs2 *, const char *label);
+ extern int change_locktable(struct tunegfs2 *, const char *label);
+ 

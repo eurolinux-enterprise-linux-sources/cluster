@@ -1,0 +1,60 @@
+commit 62a5ab048683b4ce77f0eeaba81d3330da574d41
+Author: David Teigland <teigland@redhat.com>
+Date:   Fri Jan 4 11:44:13 2013 -0600
+
+    fenced/dlm_controld/gfs_controld: use cluster_dead for corosync connections
+    
+    corosync connections are supposed to use the
+    cluster_dead() function, not the client_dead()
+    function.  The client_dead() function closes
+    the fd directly, which in the case of corosync
+    connections, fouls up the ipc, because the ipc
+    is still expecting to use that fd, which the
+    daemon has reused for something else.  The next
+    time the daemon calls into corosync ipc, it gets
+    stuck in a poll/futex loop as the lib attempts
+    to use the fd that fenced has wrongly closed.
+    
+    bz 888857
+    
+    Signed-off-by: David Teigland <teigland@redhat.com>
+
+diff --git a/fence/fenced/cpg.c b/fence/fenced/cpg.c
+index 6634f8c..a5a4208 100644
+--- a/fence/fenced/cpg.c
++++ b/fence/fenced/cpg.c
+@@ -1748,7 +1748,7 @@ int fd_join(struct fd *fd)
+ 
+ 	cpg_fd_get(cpg_handle_domain, &cpg_fd_domain);
+ 
+-	ci = client_add(cpg_fd_domain, process_cpg_domain, NULL);
++	ci = client_add(cpg_fd_domain, process_cpg_domain, cluster_dead);
+ 
+ 	list_add(&fd->list, &domains);
+ 	fd->cpg_handle = cpg_handle_domain;
+diff --git a/group/dlm_controld/cpg.c b/group/dlm_controld/cpg.c
+index 4463f4d..6a4023b 100644
+--- a/group/dlm_controld/cpg.c
++++ b/group/dlm_controld/cpg.c
+@@ -1822,7 +1822,7 @@ int dlm_join_lockspace(struct lockspace *ls)
+ 
+ 	cpg_fd_get(h, &fd);
+ 
+-	ci = client_add(fd, process_cpg_lockspace, NULL);
++	ci = client_add(fd, process_cpg_lockspace, cluster_dead);
+ 
+ 	list_add(&ls->list, &lockspaces);
+ 
+diff --git a/group/gfs_controld/cpg-new.c b/group/gfs_controld/cpg-new.c
+index 0cdfaae..537624d 100644
+--- a/group/gfs_controld/cpg-new.c
++++ b/group/gfs_controld/cpg-new.c
+@@ -2773,7 +2773,7 @@ int gfs_join_mountgroup(struct mountgroup *mg)
+ 
+ 	cpg_fd_get(h, &fd);
+ 
+-	ci = client_add(fd, process_cpg_mountgroup, NULL);
++	ci = client_add(fd, process_cpg_mountgroup, cluster_dead);
+ 
+ 	mg->cpg_handle = h;
+ 	mg->cpg_client = ci;

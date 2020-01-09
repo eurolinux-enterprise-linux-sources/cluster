@@ -1,0 +1,40 @@
+commit 2552e504f228f2e6dafee9f43666fda871fdb92e
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Thu Jan 12 15:31:18 2012 -0600
+
+    libgfs2: Fix null pointer dereference in linked_leaf_search
+    
+    Fix a null pointer dereference by checking the value of the bh set by
+    get_first_leaf(). Looking down the call tree the bh is set to NULL when
+    __bread fails to allocate memory so we can use errno as the return value
+    here.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/lost_n_found.c b/gfs2/fsck/lost_n_found.c
+index 6f09de1..d0e036a 100644
+--- a/gfs2/fsck/lost_n_found.c
++++ b/gfs2/fsck/lost_n_found.c
+@@ -160,8 +160,7 @@ int add_inode_to_lf(struct gfs2_inode *ip){
+ 			lf_dip = createi(sdp->md.rooti, "lost+found",
+ 					 S_IFDIR | 0700, 0);
+ 		if (lf_dip == NULL) {
+-			log_crit(_("Error %d creating lost+found: %s\n"),
+-				 errno);
++			log_crit(_("Error %d creating lost+found\n"), errno);
+ 			exit(FSCK_ERROR);
+ 		}
+ 
+diff --git a/gfs2/libgfs2/fs_ops.c b/gfs2/libgfs2/fs_ops.c
+index 4f1774c..330cedd 100644
+--- a/gfs2/libgfs2/fs_ops.c
++++ b/gfs2/libgfs2/fs_ops.c
+@@ -1514,6 +1514,8 @@ static int linked_leaf_search(struct gfs2_inode *dip, const char *filename,
+ 	error = get_first_leaf(dip, lindex, &bh_next);
+ 	if (error)
+ 		return error;
++	if (bh_next == NULL)
++		return errno;
+ 
+ 	/*  Find the entry  */
+ 	do{

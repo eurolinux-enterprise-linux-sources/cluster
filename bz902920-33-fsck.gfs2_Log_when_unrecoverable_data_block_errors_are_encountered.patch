@@ -1,0 +1,34 @@
+commit 6839b4acd056e8267b4fb1872e3d0783f49a4ef6
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Tue Apr 2 12:59:16 2013 -0700
+
+    fsck.gfs2: Log when unrecoverable data block errors are encountered
+    
+    This patch adds a log message whenever unrecoverable data block errors
+    are found. Otherwise the output doesn't say why it stopped processing
+    data, and which block had the problem.
+    
+    rhbz#902920
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index 9b6c391..1cd377e 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -1320,10 +1320,15 @@ static int check_data(struct gfs2_inode *ip, struct metawalk_fxns *pass,
+ 		   pass1. Therefore the individual check_data functions
+ 		   should do a range check. */
+ 		rc = pass->check_data(ip, metablock, block, pass->private);
++		if (!error && rc) {
++			error = rc;
++			log_info(_("\nUnrecoverable data block error %d on "
++				   "block %llu (0x%llx).\n"), rc,
++				 (unsigned long long)block,
++				 (unsigned long long)block);
++		}
+ 		if (rc < 0)
+ 			return rc;
+-		if (!error && rc)
+-			error = rc;
+ 		(*blks_checked)++;
+ 	}
+ 	return error;

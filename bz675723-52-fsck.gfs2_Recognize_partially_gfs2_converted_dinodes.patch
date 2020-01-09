@@ -1,0 +1,83 @@
+commit 0a25dd5b441e6743180e94100b241ed137bfda76
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Fri Jan 6 14:16:59 2012 -0600
+
+    fsck.gfs2: Recognize partially gfs2-converted dinodes
+    
+    In testing fsck.gfs2 I noticed that if a file system had some
+    leftover gfs2 dinodes (due to an interrupted gfs2_convert or
+    in my case, because I had previously loaded gfs2 metadata that
+    left gfs2 blocks laying around the gfs1 file system) those gfs2
+    dinodes were not properly processed.  In particular, it would not
+    recognize gfs2-style directories as directories because of the
+    difference in where dinode mode information is kept.  This patch
+    gives fsck.gfs2 the ability to correctly identify gfs2 dinodes
+    when checking a gfs1 file system.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/lost_n_found.c b/gfs2/fsck/lost_n_found.c
+index c028f8d..16afb11 100644
+--- a/gfs2/fsck/lost_n_found.c
++++ b/gfs2/fsck/lost_n_found.c
+@@ -207,7 +207,7 @@ int add_inode_to_lf(struct gfs2_inode *ip){
+ 	lf_blocks = lf_dip->i_di.di_blocks;
+ 
+ 	if (sdp->gfs1)
+-		mode = gfs_to_gfs2_mode(ip->i_di.__pad1);
++		mode = gfs_to_gfs2_mode(ip);
+ 	else
+ 		mode = ip->i_di.di_mode & S_IFMT;
+ 
+@@ -266,7 +266,7 @@ int add_inode_to_lf(struct gfs2_inode *ip){
+ 	incr_link_count(ip->i_di.di_num.no_addr, lf_dip->i_di.di_num.no_addr,
+ 			_("from lost+found"));
+ 	/* If it's a directory, lost+found is back-linked to it via .. */
+-	if (is_dir(&ip->i_di, sdp->gfs1))
++	if (mode == S_IFDIR)
+ 		incr_link_count(lf_dip->i_di.di_num.no_addr,
+ 				ip->i_di.di_num.no_addr, _("to lost+found"));
+ 
+diff --git a/gfs2/fsck/util.c b/gfs2/fsck/util.c
+index 0be86de..92818fb 100644
+--- a/gfs2/fsck/util.c
++++ b/gfs2/fsck/util.c
+@@ -479,7 +479,7 @@ int set_ip_blockmap(struct gfs2_inode *ip, int instree)
+ 	uint32_t mode;
+ 
+ 	if (sdp->gfs1)
+-		mode = gfs_to_gfs2_mode(ip->i_di.__pad1);
++		mode = gfs_to_gfs2_mode(ip);
+ 	else
+ 		mode = ip->i_di.di_mode & S_IFMT;
+ 
+diff --git a/gfs2/fsck/util.h b/gfs2/fsck/util.h
+index 6581cb1..2f74af3 100644
+--- a/gfs2/fsck/util.h
++++ b/gfs2/fsck/util.h
+@@ -143,8 +143,10 @@ static inline int is_dir(struct gfs2_dinode *dinode, int gfs1)
+ 	return 0;
+ }
+ 
+-static inline uint32_t gfs_to_gfs2_mode(uint32_t gfs1mode)
++static inline uint32_t gfs_to_gfs2_mode(struct gfs2_inode *ip)
+ {
++	uint16_t gfs1mode = ip->i_di.__pad1;
++
+ 	switch (gfs1mode) {
+ 	case GFS_FILE_DIR:
+ 		return S_IFDIR;
+@@ -161,7 +163,12 @@ static inline uint32_t gfs_to_gfs2_mode(uint32_t gfs1mode)
+ 	case GFS_FILE_SOCK:
+ 		return S_IFSOCK;
+ 	default:
+-		return S_IFREG;
++		/* This could be an aborted gfs2_convert so look for both. */
++		if (ip->i_di.di_entries ||
++		    (ip->i_di.di_mode & S_IFMT) == S_IFDIR)
++			return S_IFDIR;
++		else
++			return S_IFREG;
+ 	}
+ }
+ 

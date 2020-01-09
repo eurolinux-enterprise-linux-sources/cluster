@@ -1,0 +1,121 @@
+commit a07ef06fdd7048154aee94e24a3972b582d4d85a
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Wed Aug 17 10:33:07 2011 -0500
+
+    fsck.gfs2: Remove bad inodes from duplicate tree
+    
+    The problem was that if an inode was determined to be "bad" (lots of
+    corruption) and its metadata blocks were invalidated in pass1, the
+    "bad" block for the inode was set as "data" in the bitmap.  Later,
+    that caused duplicate reference processing (pass1b) to not remove the
+    block from the inode tree inside function check_n_fix_bitmap when the
+    bad block was freed. Later still, in pass4, that caused the now
+    deleted inode to be processed again, at which time it would reprocess
+    the inode's metadata and free all blocks, including blocks that were
+    duplicate-referenced by other inodes.  In other words, pass4 freed
+    blocks out from under valid references when it should not have. This
+    patch changes the bitmap type for "bad" blocks from "data" to
+    "inode". That causes function check_n_fix_bitmap to try to remove the
+    bad block from the inode tree, so pass4 never processes it by mistake.
+    
+    This patch also changes a few debug messages to make them shorter so
+    that the output files aren't as big to search through.
+    
+    rhbz#675723
+
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index 2ddf7dd..94b0148 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -113,36 +113,28 @@ int _fsck_blockmap_set(struct gfs2_inode *ip, uint64_t bblock,
+ 		   output easier to debug. */
+ 		if (ip->i_di.di_num.no_addr == bblock) {
+ 			print_fsck_log(MSG_DEBUG, caller, fline,
+-				       _("%s inode found at block %lld "
+-					 "(0x%llx): marking as '%s'\n"),
++				       _("%s inode found at block "
++					 "0x%llx: marking as '%s'\n"),
+ 				       btype, (unsigned long long)
+ 				       ip->i_di.di_num.no_addr,
+-				       (unsigned long long)
+-				       ip->i_di.di_num.no_addr,
+ 				       block_type_string(mark));
+ 		} else if (mark == gfs2_bad_block || mark == gfs2_meta_inval) {
+ 			print_fsck_log(MSG_DEBUG, caller, fline,
+-				       _("inode %lld (0x%llx) references "
+-					 "%s block %lld (0x%llx): "
++				       _("inode 0x%llx references "
++					 "%s block 0x%llx: "
+ 					 "marking as '%s'\n"),
+ 				       (unsigned long long)
+ 				       ip->i_di.di_num.no_addr,
+-				       (unsigned long long)
+-				       ip->i_di.di_num.no_addr,
+ 				       btype, (unsigned long long)bblock,
+-				       (unsigned long long)bblock,
+ 				       block_type_string(mark));
+ 		} else {
+ 			print_fsck_log(MSG_DEBUG, caller, fline,
+-				       _("inode %lld (0x%llx) references "
+-					 "%s block %lld (0x%llx): "
++				       _("inode 0x%llx references "
++					 "%s block 0x%llx: "
+ 					 "marking as '%s'\n"),
+ 				       (unsigned long long)
+-				       ip->i_di.di_num.no_addr,
+-				       (unsigned long long)
+ 				       ip->i_di.di_num.no_addr, btype,
+ 				       (unsigned long long)bblock,
+-				       (unsigned long long)bblock,
+ 				       block_type_string(mark));
+ 		}
+ 	}
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index 876078e..515f50a 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -383,8 +383,12 @@ static int check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 	*bh = NULL;
+ 
+ 	if (!valid_block(ip->i_sbd, block)) { /* blk outside of FS */
++		/* The bad dinode should be invalidated later due to
++		   "unrecoverable" errors.  The inode itself should be
++		   set "free" and removed from the inodetree by
++		   undo_check_metalist. */
+ 		fsck_blockmap_set(ip, ip->i_di.di_num.no_addr,
+-				  _("itself"), gfs2_bad_block);
++				  _("bad block referencing"), gfs2_bad_block);
+ 		log_debug( _("Bad indirect block (invalid/out of range) "
+ 			     "found in inode %lld (0x%llx).\n"),
+ 			   (unsigned long long)ip->i_di.di_num.no_addr,
+@@ -457,7 +461,7 @@ static int undo_check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 
+ 	if (!valid_block(ip->i_sbd, block)) { /* blk outside of FS */
+ 		fsck_blockmap_set(ip, ip->i_di.di_num.no_addr,
+-				  _("itself"), gfs2_block_free);
++				  _("bad block referencing"), gfs2_block_free);
+ 		return 1;
+ 	}
+ 	if (is_dir(&ip->i_di, ip->i_sbd->gfs1) && h == ip->i_di.di_height)
+diff --git a/gfs2/fsck/util.h b/gfs2/fsck/util.h
+index 9b2de61..fd75212 100644
+--- a/gfs2/fsck/util.h
++++ b/gfs2/fsck/util.h
+@@ -109,7 +109,7 @@ static inline int blockmap_to_bitmap(enum gfs2_mark_block m, int gfs1)
+ 		 GFS2_BLKST_UNLINKED,  /* GFS unlinked metadata */
+ 		 GFS2_BLKST_USED,  /* eattribute */
+ 
+-		 GFS2_BLKST_USED},  /* bad */
++		 GFS2_BLKST_DINODE}, /* bad */
+ 		/* ---------------------- gfs1 ----------------------------- */
+ 		{GFS2_BLKST_FREE,  /* free */
+ 		 GFS2_BLKST_USED,  /* data */
+@@ -129,7 +129,7 @@ static inline int blockmap_to_bitmap(enum gfs2_mark_block m, int gfs1)
+ 		 GFS2_BLKST_UNLINKED, /* GFS unlinked metadata */
+ 		 GFS2_BLKST_DINODE,  /* eattribute */
+ 
+-		 GFS2_BLKST_USED}};  /* bad */
++		 GFS2_BLKST_DINODE}}; /* bad */
+ 	return bitmap_states[gfs1][m];
+ }
+ 

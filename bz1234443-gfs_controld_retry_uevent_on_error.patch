@@ -1,0 +1,121 @@
+commit 353cec33e438d32a4be1a3eeb165abad57133864
+Author: John Ruemker <jruemker@redhat.com>
+Date:   Wed May 27 16:01:39 2015 -0400
+
+    gfs_controld: Retry uevent recv() and reconnect uevent socket on error
+    
+    When processing a uevent, on ENOBUFS retry up to three times before
+    giving up.  For other errors besides EAGAIN and EINTR, or after the
+    maximum ENOBUFS retries, reconnect the uevent netlink socket.
+
+diff --git a/group/gfs_controld/main.c b/group/gfs_controld/main.c
+index dc841da..c27b192 100644
+--- a/group/gfs_controld/main.c
++++ b/group/gfs_controld/main.c
+@@ -8,6 +8,7 @@
+ #define LOCKFILE_NAME	"/var/run/gfs_controld.pid"
+ #define CLIENT_NALLOC   32
+ #define UEVENT_BUF_SIZE 4096
++#define MAX_UEVENT_NOBUFS 3
+ 
+ static int client_maxi;
+ static int client_size;
+@@ -291,20 +292,62 @@ static char *uevent_fsname(const char *vars[])
+ 	return (name && name[0]) ? name + 1 : NULL;
+ }
+ 
++static int setup_uevent(void)
++{
++	struct sockaddr_nl snl;
++	int s, rv;
++
++	s = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_KOBJECT_UEVENT);
++	if (s < 0) {
++		log_error("uevent netlink socket");
++		return s;
++	}
++
++	memset(&snl, 0, sizeof(snl));
++	snl.nl_family = AF_NETLINK;
++	snl.nl_pid = getpid();
++	snl.nl_groups = 1;
++
++	rv = bind(s, (struct sockaddr *) &snl, sizeof(snl));
++	if (rv < 0) {
++		log_error("uevent bind error %d errno %d", rv, errno);
++		close(s);
++		return rv;
++	}
++
++	return s;
++}
++
+ static void process_uevent(int ci)
+ {
+ 	char buf[UEVENT_BUF_SIZE];
+ 	const char *uevent_vals[Env_Last];
+ 	char *fsname;
+-	int rv;
++	int rv, nobufs = 0;
+ 
+  retry_recv:
+ 	rv = recv(client[ci].fd, &buf, sizeof(buf), 0);
+ 	if (rv < 0) {
++		log_error("uevent recv error %d errno %d", rv, errno);
+ 		if (errno == EINTR)
+ 			goto retry_recv;
+-		if (errno != EAGAIN)
+-			log_error("uevent recv error %d errno %d", rv, errno);
++		if (errno == ENOBUFS && nobufs < MAX_UEVENT_NOBUFS) {
++			pollfd[ci].revents &= ~POLLERR;
++			nobufs++;
++			goto retry_recv;
++		}	
++		if (errno != EAGAIN) {
++			close(client[ci].fd); 
++			rv = setup_uevent();
++			if (rv < 0) {
++				/* revent error will trigger cleanup by loop */
++				return; 
++			}
++			client[ci].fd = rv;
++			pollfd[ci].fd = rv;
++			pollfd[ci].revents = 0;	
++			log_debug("uevent socket reconnected"); 
++		}
+ 		return;
+ 	}
+ 	buf[rv] = 0;
+@@ -375,32 +418,6 @@ static void process_uevent(int ci)
+ 	}
+ }
+ 
+-static int setup_uevent(void)
+-{
+-	struct sockaddr_nl snl;
+-	int s, rv;
+-
+-	s = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_KOBJECT_UEVENT);
+-	if (s < 0) {
+-		log_error("uevent netlink socket");
+-		return s;
+-	}
+-
+-	memset(&snl, 0, sizeof(snl));
+-	snl.nl_family = AF_NETLINK;
+-	snl.nl_pid = getpid();
+-	snl.nl_groups = 1;
+-
+-	rv = bind(s, (struct sockaddr *) &snl, sizeof(snl));
+-	if (rv < 0) {
+-		log_error("uevent bind error %d errno %d", rv, errno);
+-		close(s);
+-		return rv;
+-	}
+-
+-	return s;
+-}
+-
+ static void init_header(struct gfsc_header *h, int cmd, char *name, int result,
+ 			int extra_len)
+ {

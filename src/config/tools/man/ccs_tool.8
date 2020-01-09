@@ -1,0 +1,37 @@
+.TH "ccs_tool" "8" "" "" ""
+.SH "NAME"
+ccs_tool \- The tool used to make online queries to the cluster configuration.
+
+.SH "SYNOPSIS"
+.B ccs_tool
+[\fIOPTION\fR].. <\fBcommand\fP>
+
+.SH "DESCRIPTION"
+
+\fBccs_tool\fP is part of the Cluster Configuration System (CCS). It used
+to peform different kind of queries to the cluster configuration.
+
+.SH "WARNING"
+
+All \fBccs_tool\fP editing capabilities are now obsoleted and unsupported.
+Please see also \fBccs\fP package and documentation for a more complete
+implementation of cluster.conf CLI editor.
+
+.SH "OPTIONS"
+.TP 
+\fB\-h\fP
+Help.  Print out the usage.
+.TP 
+\fB\-V\fP
+Print the version information.
+
+sub\-commands have their own options, see below for more detail
+.SH "COMMANDS"
+
+.TP
+\fBquery\fP \fI<xpath query>\fP
+Perform an xpath query on running cluster configuration.
+
+.SH "SEE ALSO"
+.BR cluster.conf (5),
+.BR ccs (8)
