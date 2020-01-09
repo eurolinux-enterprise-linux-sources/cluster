@@ -1,0 +1,36 @@
+diff --git a/cman/cman_tool/main.c b/cman/cman_tool/main.c
+index 3d7f4e5..cd225b7 100644
+--- a/cman/cman_tool/main.c
++++ b/cman/cman_tool/main.c
+@@ -165,8 +165,10 @@ static void print_address(char *addr)
+ 	else
+ 		saddr = &sin->sin_addr;
+ 
+-	inet_ntop(ss->ss_family, saddr, buf, sizeof(buf));
+-	printf("%s", buf);
++	if (inet_ntop(ss->ss_family, saddr, buf, sizeof(buf)))
++		printf("%s", buf);
++	else
++		printf("none");
+ }
+ 
+ static char *membership_state(char *buf, int buflen, int node_state)
+@@ -352,7 +354,7 @@ static void print_node(commandline_t *comline, cman_handle_t h, int *format, str
+ {
+ 	char member_type;
+ 	struct tm *jtime;
+-	int numaddrs;
++	int numaddrs=1;
+ 	struct cman_node_address addrs[MAX_INTERFACES];
+ 	char jstring[1024];
+ 	int i,j,k;
+@@ -416,9 +418,6 @@ static void print_node(commandline_t *comline, cman_handle_t h, int *format, str
+ 				}
+ 			}
+ 		}
+-		else {
+-			printf("0.0.0.0");
+-		}
+ 	}
+ 
+ 	if (comline->format_opts && (cman_get_node_extra(h, node->cn_nodeid, &enode) == 0)) {

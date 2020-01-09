@@ -19,7 +19,7 @@
 Name: cluster
 Summary: Red Hat Cluster
 Version: 3.0.12.1
-Release: 78%{?alphatag:.%{alphatag}}%{?dist}
+Release: 84%{?alphatag:.%{alphatag}}%{?dist}
 License: GPLv2+ and LGPLv2+
 Group: System Environment/Base
 URL: http://sources.redhat.com/cluster/wiki/
@@ -329,7 +329,11 @@ Patch301: bz1252991-fenced_remove_fencedevice_attributes_from_-S.patch
 Patch302: bz1221728-schema_add_rrp_attributes.patch
 Patch303: bz1297165-proper_vote_check.patch
 Patch304: bz1202817-gfs2_utils_Add_the_glocktop_utility.patch
-
+Patch305: bz1291944-mkfs_gfs2_Open_the_target_device_with_O_EXCL.patch
+Patch306: bz1384968-cman_tool-dont-segv-with--F-and-qdevice.patch
+Patch307: bz1384968-cman_tool-dont-segv-with--F-and-qdevice2.patch
+Patch308: bz1077890-fenced_merge_kill_only_after_fencing_completes.patch
+Patch309: bz1394235-fsck_gfs2_Handle_gfs2_readi_errors_in_check_statfs.patch
 
 ## Setup/build bits
 
@@ -653,7 +657,11 @@ ExclusiveArch: i686 x86_64
 %patch302 -p1 -b .bz1221728-schema_add_rrp_attributes.patch
 %patch303 -p1 -b .bz1297165-proper_vote_check.patch
 %patch304 -p1 -b .bz1202817-gfs2_utils_Add_the_glocktop_utility
-
+%patch305 -p1 -b .bz1291944-mkfs_gfs2_Open_the_target_device_with_O_EXCL
+%patch306 -p1 -b .bz1384968-cman_tool-dont-segv-with--F-and-qdevice.patch
+%patch307 -p1 -b .bz1384968-cman_tool-dont-segv-with--F-and-qdevice2.patch
+%patch308 -p1 -b .bz1077890-fenced_merge_kill_only_after_fencing_completes.patch
+%patch309 -p1 -b .bz1394235-fsck_gfs2_Handle_gfs2_readi_errors_in_check_statfs
 
 %build
 ./configure \
@@ -871,6 +879,30 @@ fi
 %{_mandir}/man8/glocktop*
 
 %changelog
+* Mon Dec 05 2016 Andrew Price <anprice@redhat.com> - 3.0.12.1-84
+- fsck.gfs2: Handle gfs2_readi() errors in check_statfs()
+  Resolves: rhbz#1394235
+
+* Fri Dec  2 2016 Christine Caulfield <ccaulfie@redhat.com> - 3.0.12.1-83
+- fenced: Fix time_t printing in last patch spotted by covscan
+  Resolves: rhbz#1077890
+
+* Fri Dec  2 2016 Christine Caulfield <ccaulfie@redhat.com> - 3.0.12.1-82
+- fenced: Only kill following stateful merge after fencing completes
+  Resolves: rhbz#1077890
+
+* Fri Nov 11 2016 Christine Caulfield <ccaulfie@redhat.com> - 3.0.12.1-81
+- cman_tool: Fix coverity-spotted error in the previous patch
+  Resolves: rhbz#1384968
+
+* Thu Nov 10 2016 Christine Caulfield <ccaulfie@redhat.com> - 3.0.12.1-80
+- cman_tool: prevent segv in cman_tool nodes -F addr crash of qdisk is present
+  Resolves: rhbz#1384968
+
+* Mon Sep 12 2016 Andrew Price <anprice@redhat.com> - 3.0.12.1-79
+- mkfs.gfs2: Open the target device with O_EXCL
+  Resolves: rhbz#1291944
+
 * Thu Jan 28 2016 Andrew Price <anprice@redhat.com> - 3.0.12.1-78
 - gfs2-utils: Add the glocktop utility
   Resolves: rhbz#1202817

@@ -1,0 +1,50 @@
+commit b5c85f77a6e4dfd4237c12d4002464a429e5b59c
+Author: Christine Caulfield <ccaulfie@redhat.com>
+Date:   Fri Oct 14 15:28:42 2016 +0100
+
+    cman_tool: Don't segfault when taking address of qdevice
+    
+    If cman_tool nodes -F addr is called when qdevice is active then
+    cman_tool segfaults quite spectacularly when it tries to print
+    the address of the qdevice 'node'
+    
+    Signed-off-by: Christine Caulfield <ccaulfie@redhat.com>
+
+diff --git a/cman/cman_tool/main.c b/cman/cman_tool/main.c
+index 5596698..9aaac26 100644
+--- a/cman/cman_tool/main.c
++++ b/cman/cman_tool/main.c
+@@ -423,19 +423,23 @@ static void print_node(commandline_t *comline, cman_handle_t h, int *format, str
+ 	}
+ 
+ 	if (comline->addresses_opt || comline->format_opts) {
+-		if (!cman_get_node_addrs(h, node->cn_nodeid, MAX_INTERFACES, &numaddrs, addrs) &&
+-		    numaddrs)
+-		{
+-			if (!comline->format_opts) {
+-				printf("       Addresses: ");
+-				for (i = 0; i < numaddrs; i++)
+-				{
+-					print_address(addrs[i].cna_address);
+-					printf(" ");
++		if (node->cn_nodeid > 0) {
++			if (!cman_get_node_addrs(h, node->cn_nodeid, MAX_INTERFACES, &numaddrs, addrs) &&
++			    numaddrs) {
++				if (!comline->format_opts) {
++					printf("       Addresses: ");
++					for (i = 0; i < numaddrs; i++)
++					{
++						print_address(addrs[i].cna_address);
++						printf(" ");
++					}
++					printf("\n");
+ 				}
+-				printf("\n");
+ 			}
+ 		}
++		else {
++			printf("0.0.0.0");
++		}
+ 	}
+ 
+ 	if (comline->format_opts && (cman_get_node_extra(h, node->cn_nodeid, &enode) == 0)) {

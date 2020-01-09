@@ -1,0 +1,83 @@
+commit 46f911bc2828e8783550aeba065a23281b3d04c4
+Author: Andrew Price <anprice@redhat.com>
+Date:   Tue Nov 15 05:55:02 2016 -0600
+
+    fsck.gfs2: Handle gfs2_readi() errors in check_statfs()
+    
+    Discovered by static analysis with clang.
+    
+    Resolves: rhbz#1394235
+    Signed-off-by: Andrew Price <anprice@redhat.com>
+
+diff --git a/gfs2/fsck/main.c b/gfs2/fsck/main.c
+index 85e6775..d456195 100644
+--- a/gfs2/fsck/main.c
++++ b/gfs2/fsck/main.c
+@@ -150,25 +150,28 @@ static void interrupt(int sig)
+ 	}
+ }
+ 
+-static void check_statfs(struct gfs2_sbd *sdp)
++static int check_statfs(struct gfs2_sbd *sdp)
+ {
+ 	struct osi_node *n, *next = NULL;
+ 	struct rgrp_tree *rgd;
+ 	struct gfs2_rindex *ri;
+-	struct gfs2_statfs_change sc;
++	struct gfs2_statfs_change sc = {0};
+ 	char buf[sizeof(struct gfs2_statfs_change)];
+ 	int count;
+ 
+ 	if (sdp->gfs1 && !sdp->md.statfs->i_di.di_size) {
+ 		log_info("This GFS1 file system is not using fast_statfs.\n");
+-		return;
++		return 0;
+ 	}
+ 	/* Read the current statfs values */
+ 	count = gfs2_readi(sdp->md.statfs, buf, 0,
+ 			   sdp->md.statfs->i_di.di_size);
+-	if (count == sizeof(struct gfs2_statfs_change))
+-		gfs2_statfs_change_in(&sc, buf);
+-
++	if (count != sizeof(struct gfs2_statfs_change)) {
++		log_err(_("Failed to read statfs values (%d of %"PRIu64" read)\n"),
++		        count, (uint64_t)sdp->md.statfs->i_di.di_size);
++		return FSCK_ERROR;
++	}
++	gfs2_statfs_change_in(&sc, buf);
+ 	/* Calculate the real values from the rgrp information */
+ 	sdp->blks_total = 0;
+ 	sdp->blks_alloced = 0;
+@@ -188,7 +191,7 @@ static void check_statfs(struct gfs2_sbd *sdp)
+ 	    sc.sc_free == (sdp->blks_total - sdp->blks_alloced) &&
+ 	    sc.sc_dinodes == sdp->dinodes_alloced) {
+ 		log_info( _("The statfs file is accurate.\n"));
+-		return;
++		return 0;
+ 	}
+ 	log_err( _("The statfs file is wrong:\n\n"));
+ 	log_err( _("Current statfs values:\n"));
+@@ -216,12 +219,13 @@ static void check_statfs(struct gfs2_sbd *sdp)
+ 	errors_found++;
+ 	if (!query( _("Okay to fix the master statfs file? (y/n)"))) {
+ 		log_err( _("The statfs file was not fixed.\n"));
+-		return;
++		return 0;
+ 	}
+ 
+ 	do_init_statfs(sdp);
+ 	log_err( _("The statfs file was fixed.\n"));
+ 	errors_corrected++;
++	return 0;
+ }
+ 
+ static void exitlog(int status, void *unused)
+@@ -382,7 +386,7 @@ int main(int argc, char **argv)
+ 	}
+ 
+ 	if (!fsck_abort)
+-		check_statfs(sdp);
++		error = check_statfs(sdp);
+ 
+ 	/* Free up our system inodes */
+ 	if (!sdp->gfs1)

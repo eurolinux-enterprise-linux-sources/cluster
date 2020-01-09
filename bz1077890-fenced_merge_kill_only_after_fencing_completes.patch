@@ -1,0 +1,74 @@
+From 3538b1b5f0dfe94b934331ae2e69670d89bc81c9 Mon Sep 17 00:00:00 2001
+From: John Ruemker <jruemker@redhat.com>
+Date: Tue, 29 Nov 2016 17:44:07 -0500
+Subject: [PATCH] fenced: Only kill following stateful merge after fencing
+ completes
+
+Upon a stateful merge (such as following a quick disconnect/reconnect
+before fencing takes place, or if a node reconnects after being fenced
+via a storage agent), one partition in the merge must be killed.
+
+Prior commit 04d4a74883ae3e33ceafd72c03f09eb5e75a33a5 improved handling
+of these merges, such that fenced would now attempt to wait until fencing
+is complete before issuing a kill, so as to avoid discrepancies between
+which node is killed and which is fenced. It did so by only issuing a
+kill if the joining node's fence time is >= its fail_time.
+
+That left a corner case where nodes may still issue a kill without
+fencing having yet completed, if the joining node's fence_time and
+fail_time are both 0.  This can happen if the daemon CPG protocol message
+arrives before the confchg is processed; the former sets in motion any kill
+or delay that is needed (based on fence_time >= fail_time), whereas the
+latter updates fail_time.  These can arrive in either order.  When the join
+protocol is received first, a kill may still be sent out - possibly killing
+a node that was already the fence "winner", leaving a two-node cluster
+with one node fenced and one node killed.
+
+We now check that a joining node's fence_time is actually set before issuing
+a kill, otherwise we delay that kill until fencing completes.
+
+This also improves logging around this situation, to clarify in
+less-technical terms what led to the kills an admin may be seeing, and
+add more specific timing information to the debug log.
+---
+ fence/fenced/cpg.c | 14 ++++++++++----
+ 1 file changed, 10 insertions(+), 4 deletions(-)
+
+diff --git a/fence/fenced/cpg.c b/fence/fenced/cpg.c
+index 28d8e1d..1693a68 100644
+--- a/fence/fenced/cpg.c
++++ b/fence/fenced/cpg.c
+@@ -2088,20 +2088,26 @@ static void receive_protocol(struct fd_header *hd, int len)
+ 
+ 		if (cluster_quorate && node->left_time &&
+ 		    quorate_time < node->left_time) {
+-			log_debug("daemon node %d kill due to stateful merge",
+-				  hd->nodeid);
++			log_error("Node %d's join attempt is not allowed after it has previously joined a membership separate from ours.", hd->nodeid);
++			log_error("After the cluster has successfully fenced a node to resolve the conflict, that node can rejoin upon restarting.");
++
+ 			if (!node->killed) {
+ 				struct node_history *nodeh;
+ 				nodeh = get_node_history_nodeid(hd->nodeid);
+ 				if (!nodeh) {
+ 					log_error("cannot kick node, no node history %d", hd->nodeid);
+-				} else if (cluster_quorate && node->left_time &&
++				} else if (cluster_quorate && node->left_time && nodeh->fence_time &&
+ 						   quorate_time < node->left_time &&
+ 						   nodeh->fence_time >= nodeh->fail_time) {
+ 					log_error("node %d kill due to stateful merge", hd->nodeid);
++					log_error("node %d kill: left %ld quorate %ld fence %ld fail %ld ", 
++						hd->nodeid, node->left_time, quorate_time, 
++						nodeh->fence_time, nodeh->fail_time);
+ 					kick_node_from_cluster(hd->nodeid);
+ 				} else {
+-					log_debug("delay kicking node %d until fencing is done", nodeh->nodeid);
++					log_debug("delay kicking node %d until after fencing: left %ld quorate %ld fence %ld fail %ld", 
++						hd->nodeid, node->left_time, quorate_time, 
++						nodeh->fence_time, nodeh->fail_time);
+ 					nodeh->kill_after_fencing = 1;
+ 				}
+ 				node->killed = 1;
+-- 
+1.8.3.1
+
