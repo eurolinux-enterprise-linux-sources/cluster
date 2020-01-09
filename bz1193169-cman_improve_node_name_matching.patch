@@ -1,0 +1,25 @@
+--- a/cman/daemon/cman-preconfig.c	
++++ a/cman/daemon/cman-preconfig.c	
+@@ -468,16 +468,19 @@ static int verify_nodename(struct objdb_iface_ver0 *objdb, char *node)
+ 	if (nodelist_byname(objdb, cluster_parent_handle, node))
+ 		return 0;
+ 
+-	/* If nodename was from uname, try a domain-less version of it */
++	/* If nodename was from uname, try to match with increasingly more
++	 *  specific versions of it
++	 */
+ 	strcpy(nodename2, node);
+-	dot = strchr(nodename2, '.');
+-	if (dot) {
++	dot = strrchr(nodename2, '.');
++	while (dot) {
+ 		*dot = '\0';
+ 
+ 		if (nodelist_byname(objdb, cluster_parent_handle, nodename2)) {
+ 			strcpy(node, nodename2);
+ 			return 0;
+ 		}
++		dot = strrchr(nodename2, '.');
+ 	}
+ 
+ 	/* If nodename (from uname) is domain-less, try to match against

@@ -1,0 +1,94 @@
+--- a/fence/fenced/cpg.c	2015-09-18 12:05:38.736556082 -0400
++++ b/fence/fenced/cpg.c	2015-09-18 12:46:10.774765101 -0400
+@@ -331,6 +331,20 @@ static struct node *get_node_victim(stru
+ 	return NULL;
+ }
+ 
++static struct node_history *get_node_history_nodeid(int nodeid)
++{
++	struct fd *fd;
++	struct node_history *node;
++
++	list_for_each_entry(fd, &domains, list) {
++		list_for_each_entry(node, &fd->node_history, list) {
++			if (node->nodeid == nodeid)
++				return node;
++		}
++	}
++	return NULL;
++}
++
+ static struct node_history *get_node_history(struct fd *fd, int nodeid)
+ {
+ 	struct node_history *node;
+@@ -668,6 +682,14 @@ static void receive_victim_done(struct f
+ 		nodeh->fence_time_local = time(NULL);
+ 
+ 	if (hd->nodeid == our_nodeid) {
++		/* We received our own victim_done message. */
++
++		if (nodeh && nodeh->kill_after_fencing) {
++			log_error("kick fence victim %d from cluster", nodeh->nodeid);
++			nodeh->kill_after_fencing = 0;
++			kick_node_from_cluster(nodeh->nodeid);
++		}
++
+ 		/* sanity check, I don't think this should happen;
+ 		   see comment in fence_victims() */
+ 		if (node) {
+@@ -2068,9 +2090,22 @@ static void receive_protocol(struct fd_h
+ 		    quorate_time < node->left_time) {
+ 			log_debug("daemon node %d kill due to stateful merge",
+ 				  hd->nodeid);
+-			if (!node->killed)
+-				kick_node_from_cluster(hd->nodeid);
+-			node->killed = 1;
++			if (!node->killed) {
++				struct node_history *nodeh;
++				nodeh = get_node_history_nodeid(hd->nodeid);
++				if (!nodeh) {
++					log_error("cannot kick node, no node history %d", hd->nodeid);
++				} else if (cluster_quorate && node->left_time &&
++						   quorate_time < node->left_time &&
++						   nodeh->fence_time >= nodeh->fail_time) {
++					log_error("node %d kill due to stateful merge", hd->nodeid);
++					kick_node_from_cluster(hd->nodeid);
++				} else {
++					log_debug("delay kicking node %d until fencing is done", nodeh->nodeid);
++					nodeh->kill_after_fencing = 1;
++				}
++				node->killed = 1;
++			}
+ 		}
+ 
+ 		/* don't save p->proto into node->proto; we need to come
+--- a/fence/fenced/fd.h	2015-09-18 12:05:38.705555582 -0400
++++ b/fence/fenced/fd.h	2015-09-18 12:05:38.748556276 -0400
+@@ -141,6 +141,7 @@ struct node_history {
+ 	struct list_head list;
+ 	int nodeid;
+ 	int check_quorum;
++	int kill_after_fencing;
+ 	uint64_t add_time;
+ 	uint64_t left_time;
+ 	uint64_t fail_time;
+--- a/fence/fenced/member_cman.c	2015-09-18 13:00:44.998867822 -0400
++++ b/fence/fenced/member_cman.c	2015-09-18 13:01:23.137483078 -0400
+@@ -32,17 +32,6 @@ void kick_node_from_cluster(int nodeid)
+ 		log_error("telling cman to shut down cluster locally");
+ 		cman_shutdown(ch_admin, CMAN_SHUTDOWN_ANYWAY);
+ 	} else {
+-
+-		/* in a two_node cluster where both nodes maintain quorum
+-		 * by themselves during a partition+merge, both will kick
+-		 * the other, which can leave both dead and unfenced.
+-		 * this delay should help */
+-
+-		if (two_node_mode && our_nodeid > nodeid) {
+-			log_debug("kick_node_from_cluster %d delay", nodeid);
+-			sleep(5);
+-		}
+-
+ 		log_error("telling cman to remove nodeid %d from cluster",
+ 			  nodeid);
+ 		cman_kill_node(ch_admin, nodeid);

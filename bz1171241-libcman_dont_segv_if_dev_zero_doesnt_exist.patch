@@ -1,0 +1,23 @@
+--- a/cman/lib/libcman.c	
++++ a/cman/lib/libcman.c	
+@@ -303,7 +303,7 @@ static cman_handle_t open_socket(const char *name, int namelen, void *privdata)
+ 		return NULL;
+ 	}
+ 
+-	fcntl(h->fd, F_SETFD, 1); /* Set close-on-exec */
++	fcntl(h->fd, F_SETFD, FD_CLOEXEC);
+ 	memset(&sockaddr, 0, sizeof(sockaddr));
+ 	memcpy(sockaddr.sun_path, name, namelen);
+ 	sockaddr.sun_family = AF_UNIX;
+@@ -328,7 +328,10 @@ static cman_handle_t open_socket(const char *name, int namelen, void *privdata)
+ 		h = NULL;
+ 		errno = saved_errno;
+ 	}
+-	fcntl(h->zero_fd, F_SETFD, 1); /* Set close-on-exec */
++	else
++	{
++		fcntl(h->zero_fd, F_SETFD, FD_CLOEXEC);
++	}
+ 
+ 	return (cman_handle_t)h;
+ }

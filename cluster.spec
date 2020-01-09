@@ -19,7 +19,7 @@
 Name: cluster
 Summary: Red Hat Cluster
 Version: 3.0.12.1
-Release: 73%{?alphatag:.%{alphatag}}%{?dist}.2
+Release: 78%{?alphatag:.%{alphatag}}%{?dist}
 License: GPLv2+ and LGPLv2+
 Group: System Environment/Base
 URL: http://sources.redhat.com/cluster/wiki/
@@ -314,7 +314,22 @@ Patch286: bz1142947-cman_fix_message_for_non-2node_clusters.patch
 Patch287: bz1121693-libgfs2_Make_sure_secontext_gets_freed.patch
 Patch288: bz1233535-dlm_controld_retry_uevent_on_error.patch
 Patch289: bz1234443-gfs_controld_retry_uevent_on_error.patch
-Patch290: bz1297165-proper_vote_check.patch
+Patch290: bz1238754-fsck_gfs2_replace_recent_i_goal_fixes_with_simple_logic.patch
+Patch291: bz1206149-1-fsck_gfs2_Change_duptree_structure_to_have_generic_flags.patch
+Patch292: bz1206149-2-fsck_gfs2_Detect_fix_and_clone_duplicate_block_refs_within_a_dinode.patch
+Patch293: bz1077890-fenced_delay_kill_due_to_stateful_merge.patch
+Patch294: bz1171241-libcman_dont_segv_if_dev_zero_doesnt_exist.patch
+Patch295: bz1193169-cman_improve_node_name_matching.patch
+Patch296: bz1206188-cman_delete_tempfile_if_ccs_validate_fails.patch
+Patch297: bz1243944-gfs_show_more_than_128_fs.patch
+Patch298: bz1245232-qdiskd_fix_leak_in_unaligned_write.patch
+Patch299: bz1245232-qdiskd_fix_memcpy_in_unaligned_write.patch
+Patch300: bz1257732-qdiskd_watch_for_other_nodes_leaving_during_master_election.patch
+Patch301: bz1252991-fenced_remove_fencedevice_attributes_from_-S.patch
+Patch302: bz1221728-schema_add_rrp_attributes.patch
+Patch303: bz1297165-proper_vote_check.patch
+Patch304: bz1202817-gfs2_utils_Add_the_glocktop_utility.patch
+
 
 ## Setup/build bits
 
@@ -623,7 +638,22 @@ ExclusiveArch: i686 x86_64
 %patch287 -p1 -b .bz1121693-libgfs2_Make_sure_secontext_gets_freed
 %patch288 -p1 -b .bz1233535-dlm_controld_retry_uevent_on_error.patch
 %patch289 -p1 -b .bz1234443-gfs_controld_retry_uevent_on_error.patch
-%patch290 -p1 -b .bz1297165-proper_vote_check.patch
+%patch290 -p1 -b .bz1238754-fsck_gfs2_replace_recent_i_goal_fixes_with_simple_logic
+%patch291 -p1 -b .bz1206149-1-fsck_gfs2_Change_duptree_structure_to_have_generic_flags
+%patch292 -p1 -b .bz1206149-2-fsck_gfs2_Detect_fix_and_clone_duplicate_block_refs_within_a_dinode
+%patch293 -p1 -b .bz1077890-fenced_delay_kill_due_to_stateful_merge.patch
+%patch294 -p1 -b .bz1171241-libcman_dont_segv_if_dev_zero_doesnt_exist.patch
+%patch295 -p1 -b .bz1193169-cman_improve_node_name_matching.patch
+%patch296 -p1 -b .bz1206188-cman_delete_tempfile_if_ccs_validate_fails.patch
+%patch297 -p1 -b .bz1243944-gfs_show_more_than_128_fs.patch
+%patch298 -p1 -b .bz1245232-qdiskd_fix_leak_in_unaligned_write.patch
+%patch299 -p1 -b .bz1245232-qdiskd_fix_memcpy_in_unaligned_write.patch
+%patch300 -p1 -b .bz1257732-qdiskd_watch_for_other_nodes_leaving_during_master_election.patch
+%patch301 -p1 -b .bz1252991-fenced_remove_fencedevice_attributes_from_-S.patch
+%patch302 -p1 -b .bz1221728-schema_add_rrp_attributes.patch
+%patch303 -p1 -b .bz1297165-proper_vote_check.patch
+%patch304 -p1 -b .bz1202817-gfs2_utils_Add_the_glocktop_utility
+
 
 %build
 ./configure \
@@ -835,20 +865,62 @@ fi
 %doc doc/COPYRIGHT doc/README.licence doc/COPYING.*
 %{_sysconfdir}/rc.d/init.d/gfs2
 /sbin/*.gfs2
+%{_sbindir}/glocktop
 %{_sbindir}/*gfs2*
 %{_mandir}/man8/*gfs2*
+%{_mandir}/man8/glocktop*
 
 %changelog
-* Thu Jan 14 2016 Ken Gaillot <kgaillot@redhat.com> - 3.0.12.1-73.2
+* Thu Jan 28 2016 Andrew Price <anprice@redhat.com> - 3.0.12.1-78
+- gfs2-utils: Add the glocktop utility
+  Resolves: rhbz#1202817
+
+* Tue Jan 12 2016 Ken Gaillot <kgaillot@redhat.com> - 3.0.12.1-77
 - cman: Properly check for votes when node names aren't specified
-  Resolves: rhbz#1298455
+  Resolves: rhbz#1297165
+
+* Thu Nov 25 2015 Christine Caulfield <ccaulfie@redhat.com> - 3.0.12.1-75
+- libfence: Remove fencedevice params from fence_node -S so that asking for
+  status does not shut down a node if action= is set
+  Resolves: rhbz#1252991
+- schema: add RRP attributes for <token> section
+  Resolves: rhbz#1221728
+
+* Mon Nov 23 2015 Christine Caulfield <ccaulfie@redhat.com> - 3.0.12.1-75
+- fenced: Delay killing a node if there's a stateful merge after a short outage
+  Resolves: rhbz#1077890
+- cman_tool: Don't segfault if /dev/zero doesn't exist
+  Resolves: rhbz#1171241
+- cman: Improve node-name matching algorithm
+  Resolves: rhbz#1193169
+- cman: Delete temp file if ccs_validation fails
+  Resolves: rhbz#1206188
+- dlm_controld: reconnect uevent socket on error
+  Resolves: rhbz#1221815
+- gfs_controld: reconnect uevent socket on error
+  Resolves: rhbz#1225583
+- groupd: Show more than 128 mount groups or lockspaces
+  Resolves: rhbz#1243944
+- qdiskd: fix memory leak in unaligned write path
+  Resolves: rhbz#1245232
+- qdiskd: fix memory copy in unaligned write path
+  Resolves: rhbz#1245232
+- qdiskd: Watch for other nodes leaving during a master re-election
+  Resolves: rhbz#1257732
+ 
+
+* Mon Nov 02 2015 Andrew Price <anprice@redhat.com> - 3.0.12.1-74
+- fsck.gfs2: replace recent i_goal fixes with simple logic
+  Resolves: rhbz#1238754
+- fsck.gfs2: Change duptree structure to have generic flags
+- fsck.gfs2: Detect, fix and clone duplicate block refs within a dinode
+  Resolves: rhbz#1206149
 
 * Mon Jul 06 2015 Christine Caulfield <ccaulfie@redhat.com> - 3.0.12.1-73.1
 - gfs_controld: Retry uevent recv() and reconnect uevent socket on error
   Resolves: rhbz#1234443
 - dlm_controld: Retry uevent recv() and reconnect uevent socket on error
   Resolves: rhbz#1233535 
-
 
 * Thu Mar 05 2015 Andrew Price <anprice@redhat.com> - 3.0.12.1-73
 - libgfs2: Make sure secontext gets freed (addendum)

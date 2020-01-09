@@ -1,0 +1,41 @@
+commit 8edb0d0eb31d94b8a3ba81f6d5b4c398accc950d
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Mon Nov 28 16:48:28 2011 +0100
+
+    qdiskd: fix memcpy direction and possible memory leak
+    
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/cman/qdisk/disk.c b/cman/qdisk/disk.c
+index 9884ea7..524742c 100644
+--- a/cman/qdisk/disk.c
++++ b/cman/qdisk/disk.c
+@@ -432,10 +432,10 @@ diskRawRead(target_info_t *disk, char *buf, int len)
+ 	io_state(STATE_NONE);
+ 	if (readret > 0) {
+ 		if (readret > len) {
+-			memcpy(alignedBuf, buf, len);
++			memcpy(buf, alignedBuf, len);
+ 			readret = len;
+ 		} else {
+-			memcpy(alignedBuf, buf, readret);
++			memcpy(buf, alignedBuf, readret);
+ 		}
+ 	}
+ 
+@@ -505,13 +505,14 @@ diskRawWrite(target_info_t *disk, char *buf, int len)
+ 	}
+ 
+ 	if (len > disk->d_blksz) {
++		free(alignedBuf);
+ 		logt_print(LOG_ERR,
+ 		       "diskRawWrite: not setup for larger than %d.\n",
+ 		       (int)disk->d_blksz);
+ 		return (-1);
+ 	}
+ 
+-	memcpy(buf, alignedBuf, len);
++	memcpy(alignedBuf, buf, len);
+ 	io_state(STATE_WRITE);
+ 	ret = write(disk->d_fd, alignedBuf, writelen);
+ 	io_state(STATE_NONE);

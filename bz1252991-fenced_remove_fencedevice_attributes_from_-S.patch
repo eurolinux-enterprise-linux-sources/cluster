@@ -1,0 +1,30 @@
+commit c8387c1f4ef9ec52cceb52e89f89bdf464df5d40
+Author: John Ruemker <jruemker@redhat.com>
+Date:   Wed Aug 12 12:09:32 2015 -0400
+
+    fencelib: Remove action from fencedevice params with fence_node -S
+    
+    fence_node -S intends to execute the fence methods for a given node, but
+    using action=status.  As we are compiling the argument list, we properly
+    strip off any action attribute from the node-specific attributes pulled
+    from the configuration, however we do not do the same for fencedevice
+    attributes.  If action=off or action=reboot is specified in the fencedevice
+    attributes, fence_node -S will retain that action and can power off a node
+    unexpectedly.
+
+diff --git a/fence/libfence/agent.c b/fence/libfence/agent.c
+index fac6c92..92c78f9 100644
+--- a/fence/libfence/agent.c
++++ b/fence/libfence/agent.c
+@@ -887,6 +887,11 @@ static int make_args_status(int cd, char *victim, char *method, int d,
+ 			continue;
+ 		}
+ 
++		if (!strncmp(str, "action=", 7)) {
++			free(str);
++			continue;
++		}
++
+ 		ret = snprintf(args + pos, len - pos, "%s\n", str);
+ 
+ 		free(str);

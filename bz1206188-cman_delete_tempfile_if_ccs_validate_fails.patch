@@ -1,0 +1,12 @@
+diff --git a/config/tools/xml/ccs_config_validate.in b/config/tools/xml/ccs_config_validate.in
+index 6573fef..4b30c1b 100644
+--- a/config/tools/xml/ccs_config_validate.in
++++ b/config/tools/xml/ccs_config_validate.in
+@@ -190,6 +190,7 @@ lecho "Updating relaxng schema"
+ if [ "$updaterelaxng" != 0 ]; then
+ 	updateerr="$(ccs_update_schema 2>&1)"
+ 	if [ $? != 0 ]; then
++		[ -z "$notempfilerm" ] && rm -f $tempfile
+ 		echo "Unable to update relaxng schema: $updateerr" >&2
+ 		exit 255
+ 	fi

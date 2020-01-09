@@ -1,0 +1,31 @@
+--- a/config/tools/xml/cluster.rng.in.head	
++++ a/config/tools/xml/cluster.rng.in.head	
+@@ -290,6 +290,28 @@ To validate your cluster.conf against this schema, run:
+         rha:default="3" rha:sample="5"/>
+    </optional>
+    <optional>
++    <attribute name="rrp_problem_count_mcast_threshold" rha:description="This  
++        specifies the  number of times a problem is detected with
++        multicast before setting the link faulty for passive rrp  mode.
++        This variable is unused in active rrp mode.
++        The default is 10 times rrp_problem_count_threshold."/>
++   </optional>
++   <optional>
++    <attribute name="rrp_problem_count_timeout" rha:description="This 
++        specifies the time in milliseconds to wait before decrementing
++        the problem count by 1 for a particular ring to ensure a
++        link is not marked faulty for transient network failures.
++        The default is 2000 milliseconds."
++        rha:default="2000"/>
++   </optional>
++   <optional>
++    <attribute name="rrp_autorecovery_check_timeout" rha:description="This
++        specifies the time in milliseconds to check if  the  failed
++        ring can be auto-recovered.
++        The default is 1000 milliseconds."
++        rha:default="1000"/>
++   </optional>
++   <optional>
+     <attribute name="secauth" rha:description="This attribute specifies
+        that HMAC/SHA1 authentication should be used to authenticate all
+        messages. It further specifies that all data should be encrypted

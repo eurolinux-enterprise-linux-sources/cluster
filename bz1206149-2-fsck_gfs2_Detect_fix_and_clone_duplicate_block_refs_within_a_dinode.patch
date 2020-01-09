@@ -1,0 +1,339 @@
+commit 870ba3e84c99dfa1b36a35ca22dcc37d41b3f501
+Author: Bob Peterson <rpeterso@redhat.com>
+Date:   Mon Jun 29 10:53:52 2015 -0500
+
+    fsck.gfs2: Detect, fix and clone duplicate block refs within a dinode
+    
+    Prior to this patch, fsck.gfs2 was unable to detect and fix duplicate
+    block references within the same file. This patch detects when data
+    blocks are duplicated within a dinode, then tries to clone the data
+    to a new block.
+    
+    rhbz#1206149
+
+diff --git a/gfs2/fsck/fs_recovery.c b/gfs2/fsck/fs_recovery.c
+index 2e902ea..883ddeb 100644
+--- a/gfs2/fsck/fs_recovery.c
++++ b/gfs2/fsck/fs_recovery.c
+@@ -605,7 +605,8 @@ static int rangecheck_jmeta(struct gfs2_inode *ip, uint64_t block,
+ }
+ 
+ static int rangecheck_jdata(struct gfs2_inode *ip, uint64_t metablock,
+-			   uint64_t block, void *private)
++			    uint64_t block, void *private,
++			    struct gfs2_buffer_head *bh, uint64_t *ptr)
+ {
+ 	return rangecheck_jblock(ip, block);
+ }
+diff --git a/gfs2/fsck/fsck.h b/gfs2/fsck/fsck.h
+index 5f15894..5a5cd19 100644
+--- a/gfs2/fsck/fsck.h
++++ b/gfs2/fsck/fsck.h
+@@ -52,6 +52,8 @@ struct dir_status {
+ };
+ 
+ #define DUPFLAG_REF1_FOUND 1 /* Has the original reference been found? */
++#define DUPFLAG_REF1_IS_DUPL 2 /* The original reference is also where we
++				  determined there was a duplicate. */
+ 
+ struct duptree {
+ 	struct osi_node node;
+diff --git a/gfs2/fsck/metawalk.c b/gfs2/fsck/metawalk.c
+index 959b905..191c4f3 100644
+--- a/gfs2/fsck/metawalk.c
++++ b/gfs2/fsck/metawalk.c
+@@ -1354,7 +1354,8 @@ static int check_data(struct gfs2_inode *ip, struct metawalk_fxns *pass,
+ 		   would defeat the rangecheck_block related functions in
+ 		   pass1. Therefore the individual check_data functions
+ 		   should do a range check. */
+-		rc = pass->check_data(ip, metablock, block, pass->private);
++		rc = pass->check_data(ip, metablock, block, pass->private,
++				      bh, ptr);
+ 		if (!error && rc) {
+ 			error = rc;
+ 			log_info("\n");
+@@ -1664,7 +1665,8 @@ int delete_leaf(struct gfs2_inode *ip, uint64_t block, void *private)
+ }
+ 
+ int delete_data(struct gfs2_inode *ip, uint64_t metablock,
+-		uint64_t block, void *private)
++		uint64_t block, void *private, struct gfs2_buffer_head *bh,
++		uint64_t *ptr)
+ {
+ 	return delete_block_if_notdup(ip, block, NULL, _("data"), NULL,
+ 				      private);
+@@ -1791,7 +1793,8 @@ static int alloc_metalist(struct gfs2_inode *ip, uint64_t block,
+ }
+ 
+ static int alloc_data(struct gfs2_inode *ip, uint64_t metablock,
+-		      uint64_t block, void *private)
++		      uint64_t block, void *private,
++		      struct gfs2_buffer_head *bh, uint64_t *ptr)
+ {
+ 	uint8_t q;
+ 	const char *desc = (const char *)private;
+diff --git a/gfs2/fsck/metawalk.h b/gfs2/fsck/metawalk.h
+index 5e30bfe..b3224ba 100644
+--- a/gfs2/fsck/metawalk.h
++++ b/gfs2/fsck/metawalk.h
+@@ -28,7 +28,8 @@ extern int delete_metadata(struct gfs2_inode *ip, uint64_t block,
+ 			   int *was_duplicate, void *private);
+ extern int delete_leaf(struct gfs2_inode *ip, uint64_t block, void *private);
+ extern int delete_data(struct gfs2_inode *ip, uint64_t metablock,
+-		       uint64_t block, void *private);
++		       uint64_t block, void *private,
++		       struct gfs2_buffer_head *bh, uint64_t *ptr);
+ extern int delete_eattr_indir(struct gfs2_inode *ip, uint64_t block, uint64_t parent,
+ 		       struct gfs2_buffer_head **bh, void *private);
+ extern int delete_eattr_leaf(struct gfs2_inode *ip, uint64_t block, uint64_t parent,
+@@ -117,7 +118,8 @@ struct metawalk_fxns {
+ 			       int *is_valid, int *was_duplicate,
+ 			       void *private);
+ 	int (*check_data) (struct gfs2_inode *ip, uint64_t metablock,
+-			   uint64_t block, void *private);
++			   uint64_t block, void *private,
++			   struct gfs2_buffer_head *bh, uint64_t *ptr);
+ 	int (*check_eattr_indir) (struct gfs2_inode *ip, uint64_t block,
+ 				  uint64_t parent,
+ 				  struct gfs2_buffer_head **bh, void *private);
+diff --git a/gfs2/fsck/pass1.c b/gfs2/fsck/pass1.c
+index 4d31cff..6717436 100644
+--- a/gfs2/fsck/pass1.c
++++ b/gfs2/fsck/pass1.c
+@@ -41,7 +41,8 @@ static int check_metalist(struct gfs2_inode *ip, uint64_t block,
+ static int undo_check_metalist(struct gfs2_inode *ip, uint64_t block,
+ 			       int h, void *private);
+ static int check_data(struct gfs2_inode *ip, uint64_t metablock,
+-		      uint64_t block, void *private);
++		      uint64_t block, void *private,
++		      struct gfs2_buffer_head *bh, uint64_t *ptr);
+ static int undo_check_data(struct gfs2_inode *ip, uint64_t block,
+ 			   void *private);
+ static int check_eattr_indir(struct gfs2_inode *ip, uint64_t indirect,
+@@ -69,7 +70,8 @@ static int invalidate_metadata(struct gfs2_inode *ip, uint64_t block,
+ static int invalidate_leaf(struct gfs2_inode *ip, uint64_t block,
+ 			   void *private);
+ static int invalidate_data(struct gfs2_inode *ip, uint64_t metablock,
+-			   uint64_t block, void *private);
++			   uint64_t block, void *private,
++			   struct gfs2_buffer_head *bh, uint64_t *ptr);
+ static int invalidate_eattr_indir(struct gfs2_inode *ip, uint64_t block,
+ 				  uint64_t parent,
+ 				  struct gfs2_buffer_head **bh,
+@@ -433,7 +435,8 @@ out:
+ }
+ 
+ static int check_data(struct gfs2_inode *ip, uint64_t metablock,
+-		      uint64_t block, void *private)
++		      uint64_t block, void *private,
++		      struct gfs2_buffer_head *bbh, uint64_t *ptr)
+ {
+ 	uint8_t q;
+ 	struct block_count *bc = (struct block_count *) private;
+@@ -937,7 +940,8 @@ static int invalidate_leaf(struct gfs2_inode *ip, uint64_t block,
+ }
+ 
+ static int invalidate_data(struct gfs2_inode *ip, uint64_t metablock,
+-			   uint64_t block, void *private)
++			   uint64_t block, void *private,
++			   struct gfs2_buffer_head *bh, uint64_t *ptr)
+ {
+ 	return mark_block_invalid(ip, block, ref_as_data, _("data"),
+ 				  NULL, NULL);
+@@ -1032,7 +1036,8 @@ static int rangecheck_leaf(struct gfs2_inode *ip, uint64_t block,
+ }
+ 
+ static int rangecheck_data(struct gfs2_inode *ip, uint64_t metablock,
+-			   uint64_t block, void *private)
++			   uint64_t block, void *private,
++			   struct gfs2_buffer_head *bh, uint64_t *ptr)
+ {
+ 	return rangecheck_block(ip, block, NULL, btype_data, private);
+ }
+diff --git a/gfs2/fsck/pass1b.c b/gfs2/fsck/pass1b.c
+index 401ee80..28f0dd3 100644
+--- a/gfs2/fsck/pass1b.c
++++ b/gfs2/fsck/pass1b.c
+@@ -25,6 +25,11 @@ struct dup_handler {
+ 	int ref_count;
+ };
+ 
++struct clone_target {
++	uint64_t dup_block;
++	int first;
++};
++
+ static void log_inode_reference(struct duptree *dt, osi_list_t *tmp, int inval)
+ {
+ 	char reftypestring[32];
+@@ -247,6 +252,112 @@ static void revise_dup_handler(uint64_t dup_blk, struct dup_handler *dh)
+ 	}
+ }
+ 
++static int clone_check_meta(struct gfs2_inode *ip, uint64_t block,
++			    struct gfs2_buffer_head **bh, int h,
++			    int *is_valid, int *was_duplicate, void *private)
++{
++	*was_duplicate = 0;
++	*is_valid = 1;
++	*bh = bread(ip->i_sbd, block);
++	return 0;
++}
++
++/* clone_data - clone a duplicate reference
++ *
++ * This function remembers the first reference to the specified block, and
++ * clones all subsequent references to it (with permission).
++ */
++static int clone_data(struct gfs2_inode *ip, uint64_t metablock,
++		      uint64_t block, void *private,
++		      struct gfs2_buffer_head *bh, uint64_t *ptr)
++{
++	struct clone_target *clonet = (struct clone_target *)private;
++	struct gfs2_buffer_head *clone_bh;
++	uint64_t cloneblock;
++
++	if (block != clonet->dup_block)
++		return 0;
++
++	if (clonet->first) {
++		log_debug(_("Inode %lld (0x%llx)'s first reference to "
++			    "block %lld (0x%llx) is targeted for cloning.\n"),
++			  (unsigned long long)ip->i_di.di_num.no_addr,
++			  (unsigned long long)ip->i_di.di_num.no_addr,
++			  (unsigned long long)block,
++			  (unsigned long long)block);
++		clonet->first = 0;
++		return 0;
++	}
++	log_err(_("Error: Inode %lld (0x%llx)'s subsequent reference to "
++		  "block %lld (0x%llx) is an error.\n"),
++		(unsigned long long)ip->i_di.di_num.no_addr,
++		(unsigned long long)ip->i_di.di_num.no_addr,
++		(unsigned long long)block, (unsigned long long)block);
++	if (query( _("Okay to clone the duplicated reference? (y/n) "))) {
++		cloneblock = meta_alloc(ip);
++		clone_bh = bread(ip->i_sbd, clonet->dup_block);
++		if (clone_bh) {
++			fsck_blockmap_set(ip, cloneblock, _("data"),
++					  GFS2_BLKST_USED);
++			clone_bh->b_blocknr = cloneblock;
++			bmodified(clone_bh);
++			brelse(clone_bh);
++			/* Now fix the reference: */
++			*ptr = cpu_to_be64(cloneblock);
++			bmodified(bh);
++			log_err(_("Duplicate reference to block %lld (0x%llx) "
++				  "was cloned to block %lld (0x%llx).\n"),
++				(unsigned long long)block,
++				(unsigned long long)block,
++				(unsigned long long)cloneblock,
++				(unsigned long long)cloneblock);
++			return 0;
++		}
++		log_err(_("Error: Unable to allocate a new data block.\n"));
++		if (!query("Should I zero the reference instead? (y/n)")) {
++			log_err(_("Duplicate reference to block %lld "
++				  "(0x%llx) was not fixed.\n"),
++				(unsigned long long)block,
++				(unsigned long long)block);
++			return 0;
++		}
++		*ptr = 0;
++		bmodified(bh);
++		log_err(_("Duplicate reference to block %lld (0x%llx) was "
++			  "zeroed.\n"),
++			(unsigned long long)block,
++			(unsigned long long)block);
++	} else {
++		log_err(_("Duplicate reference to block %lld (0x%llx) "
++			  "was not fixed.\n"), (unsigned long long)block,
++			(unsigned long long)block);
++	}
++	return 0;
++}
++
++/* clone_dup_ref_in_inode - clone a duplicate reference within a single inode
++ *
++ * This function traverses the metadata tree of an inode, cloning all
++ * but the first reference to a duplicate block reference.
++ */
++static void clone_dup_ref_in_inode(struct gfs2_inode *ip, struct duptree *dt)
++{
++	int error;
++	struct clone_target clonet = {.dup_block = dt->block, .first = 1};
++	struct metawalk_fxns pass1b_fxns_clone = {
++		.private = &clonet,
++		.check_metalist = clone_check_meta,
++		.check_data = clone_data,
++	};
++
++	error = check_metatree(ip, &pass1b_fxns_clone);
++	if (error) {
++		log_err(_("Error cloning duplicate reference(s) to block %lld "
++			  "(0x%llx).\n"), (unsigned long long)dt->block,
++			(unsigned long long)dt->block);
++	}
++}
++
+ /* handle_dup_blk - handle a duplicate block reference.
+  *
+  * This function should resolve and delete the duplicate block reference given,
+@@ -387,6 +498,9 @@ static int handle_dup_blk(struct gfs2_sbd *sdp, struct duptree *dt)
+ 			   (unsigned long long)id->block_no);
+ 		ip = fsck_load_inode(sdp, id->block_no);
+ 
++		if (dt->dup_flags & DUPFLAG_REF1_IS_DUPL)
++			clone_dup_ref_in_inode(ip, dt);
++
+ 		q = block_type(id->block_no);
+ 		if (q == gfs2_inode_invalid) {
+ 			log_debug( _("The remaining reference inode %lld "
+@@ -462,7 +576,8 @@ static int check_metalist_refs(struct gfs2_inode *ip, uint64_t block,
+ }
+ 
+ static int check_data_refs(struct gfs2_inode *ip, uint64_t metablock,
+-			   uint64_t block, void *private)
++			   uint64_t block, void *private,
++			   struct gfs2_buffer_head *bh, uint64_t *ptr)
+ {
+ 	return add_duplicate_ref(ip, block, ref_as_data, 1, INODE_VALID);
+ }
+diff --git a/gfs2/fsck/pass2.c b/gfs2/fsck/pass2.c
+index dd030ce..63fe6a6 100644
+--- a/gfs2/fsck/pass2.c
++++ b/gfs2/fsck/pass2.c
+@@ -1605,7 +1605,8 @@ static int check_metalist_qc(struct gfs2_inode *ip, uint64_t block,
+ }
+ 
+ static int check_data_qc(struct gfs2_inode *ip, uint64_t metablock,
+-			 uint64_t block, void *private)
++			 uint64_t block, void *private,
++			 struct gfs2_buffer_head *bbh, uint64_t *ptr)
+ {
+ 	struct gfs2_buffer_head *bh;
+ 
+diff --git a/gfs2/fsck/util.c b/gfs2/fsck/util.c
+index 6039fe3..250ce3d 100644
+--- a/gfs2/fsck/util.c
++++ b/gfs2/fsck/util.c
+@@ -258,15 +258,16 @@ int add_duplicate_ref(struct gfs2_inode *ip, uint64_t block,
+ 	   resolve it. The first reference can't be the second reference. */
+ 	if (id && first && !(dt->dup_flags & DUPFLAG_REF1_FOUND)) {
+ 		log_info(_("Original reference to block %llu (0x%llx) was "
+-			   "previously found to be bad and deleted.\n"),
++			   "either found to be bad and deleted, or else "
++			   "a duplicate within the same inode.\n"),
+ 			 (unsigned long long)block,
+ 			 (unsigned long long)block);
+ 		log_info(_("I'll consider the reference from inode %llu "
+ 			   "(0x%llx) the first reference.\n"),
+ 			 (unsigned long long)ip->i_di.di_num.no_addr,
+ 			 (unsigned long long)ip->i_di.di_num.no_addr);
+-		dt->dup_flags |= DUPFLAG_REF1_FOUND;
+-		return meta_is_good;
++		dt->dup_flags |= DUPFLAG_REF1_IS_DUPL;
++		dt->refs++;
+ 	}
+ 
+ 	/* The first time this is called from pass1 is actually the second

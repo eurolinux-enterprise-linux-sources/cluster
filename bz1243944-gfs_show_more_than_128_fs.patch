@@ -1,0 +1,37 @@
+--- a/group/gfs_control/main.c	
++++ a/group/gfs_control/main.c	
+@@ -28,7 +28,7 @@ static int operation;
+ static int opt_ind;
+ static int ls_all_nodes;
+ 
+-#define MAX_MG 128
++#define MAX_MG 1024
+ #define MAX_NODES 128
+ 
+ struct gfsc_mountgroup mgs[MAX_MG];
+--- a/group/tool/main.c	
++++ a/group/tool/main.c	
+@@ -24,9 +24,9 @@ 
+ #define GROUP_LIBCPG			3
+ 
+ #define MAX_NODES			128
+-#define MAX_LS				128
+-#define MAX_MG				128
+-#define MAX_GROUPS			128
++#define MAX_LS				1024
++#define MAX_MG				1024
++#define MAX_GROUPS			1024
+ 
+ #define OP_LIST				1
+ #define OP_DUMP				2
+--- a/dlm/tool/main.c
++++ b/dlm/tool/main.c
+@@ -44,7 +44,7 @@ static int verbose;
+ static int wide;
+ static int summarize;
+ 
+-#define MAX_LS 128
++#define MAX_LS 1024
+ #define MAX_NODES 128
+ 
+ /* from linux/fs/dlm/dlm_internal.h */

@@ -1,0 +1,28 @@
+commit 06116f1663094f0dfad88e9285ebd86d13f46248
+Author: John Ruemker <jruemker@redhat.com>
+Date:   Thu Aug 27 16:04:11 2015 -0400
+
+    qdiskd: Watch for other nodes leaving while waiting for master reelection
+    
+    With master_wins mode enabled, the master waits for reelection of
+    another node before the daemon will exit.  However if another node
+    happens to leave while the master is waiting, the master does not
+    recognize the transition of that member to not-running, and thus
+    continues waiting for it to take over as master, when it never will
+    
+    Signed-off-by: John Ruemker <jruemker@redhat.com>
+
+diff --git a/cman/qdisk/main.c b/cman/qdisk/main.c
+index c633442..f3c7307 100644
+--- a/cman/qdisk/main.c
++++ b/cman/qdisk/main.c
+@@ -1297,7 +1297,8 @@ quorum_reelect_master(qd_ctx *ctx, node_info_t *ni, int max)
+ 		read_node_blocks(ctx, ni, max);
+ 
+ 		for (x = 0; x < max; x++) {
+-			if (ni[x].ni_state >= S_RUN) {
++			if (ni[x].ni_status.ps_nodeid != ctx->qc_my_id &&
++			    ni[x].ni_status.ps_state >= S_RUN) {
+ 				found = 1;
+ 			}
+ 		}

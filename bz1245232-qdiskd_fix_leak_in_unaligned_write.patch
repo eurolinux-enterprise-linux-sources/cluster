@@ -1,0 +1,22 @@
+commit e630b4a25622efded853f5ea1098f0646663bcb0
+Author: Fabio M. Di Nitto <fdinitto@redhat.com>
+Date:   Mon Nov 21 17:15:54 2011 +0100
+
+    qdiskd: don't leak memory if we fail to read from disk
+    
+    Spotted by Coverity Scan
+    
+    Signed-off-by: Fabio M. Di Nitto <fdinitto@redhat.com>
+
+diff --git a/cman/qdisk/disk.c b/cman/qdisk/disk.c
+index 0458abe..edc9139 100644
+--- a/cman/qdisk/disk.c
++++ b/cman/qdisk/disk.c
+@@ -605,6 +605,7 @@ qdisk_read(target_info_t *disk, __off64_t offset, void *bufin, int count)
+ 	rv = diskRawReadShadow(disk, offset, (char *)hdrp, disk->d_blksz);
+ 	
+ 	if (rv == -1) {
++		free(hdrp);
+ 		return -1;
+ 	}
+ 	
