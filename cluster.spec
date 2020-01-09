@@ -19,7 +19,7 @@
 Name: cluster
 Summary: Red Hat Cluster
 Version: 3.0.12.1
-Release: 84%{?alphatag:.%{alphatag}}%{?dist}
+Release: 84%{?alphatag:.%{alphatag}}%{?dist}.1
 License: GPLv2+ and LGPLv2+
 Group: System Environment/Base
 URL: http://sources.redhat.com/cluster/wiki/
@@ -334,6 +334,7 @@ Patch306: bz1384968-cman_tool-dont-segv-with--F-and-qdevice.patch
 Patch307: bz1384968-cman_tool-dont-segv-with--F-and-qdevice2.patch
 Patch308: bz1077890-fenced_merge_kill_only_after_fencing_completes.patch
 Patch309: bz1394235-fsck_gfs2_Handle_gfs2_readi_errors_in_check_statfs.patch
+Patch310: bz1510500-careful_kill_in_twonode.patch
 
 ## Setup/build bits
 
@@ -662,6 +663,7 @@ ExclusiveArch: i686 x86_64
 %patch307 -p1 -b .bz1384968-cman_tool-dont-segv-with--F-and-qdevice2.patch
 %patch308 -p1 -b .bz1077890-fenced_merge_kill_only_after_fencing_completes.patch
 %patch309 -p1 -b .bz1394235-fsck_gfs2_Handle_gfs2_readi_errors_in_check_statfs
+%patch310 -p1 -b .bz1510500-careful_kill_in_twonode.patch
 
 %build
 ./configure \
@@ -879,6 +881,11 @@ fi
 %{_mandir}/man8/glocktop*
 
 %changelog
+* Tue Sep 24 2019 Fabio M. Di Nitto <fdinitto@redhat.com> - 3.0.12.1-84.1
+- fenced: make sure that a node that leaves and rejoins with a different
+  membership is fenced.
+  Resolves: rhbz#1510500
+
 * Mon Dec 05 2016 Andrew Price <anprice@redhat.com> - 3.0.12.1-84
 - fsck.gfs2: Handle gfs2_readi() errors in check_statfs()
   Resolves: rhbz#1394235

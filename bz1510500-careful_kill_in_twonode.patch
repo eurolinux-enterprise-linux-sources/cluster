@@ -1,0 +1,46 @@
+diff -Narud cluster-3.0.12.1.orig/fence/fenced/cpg.c cluster-3.0.12.1/fence/fenced/cpg.c
+--- cluster-3.0.12.1.orig/fence/fenced/cpg.c	2019-09-24 05:17:44.521399672 +0200
++++ cluster-3.0.12.1/fence/fenced/cpg.c	2019-09-24 05:20:37.896760973 +0200
+@@ -2092,23 +2092,27 @@
+ 			log_error("After the cluster has successfully fenced a node to resolve the conflict, that node can rejoin upon restarting.");
+ 
+ 			if (!node->killed) {
+-				struct node_history *nodeh;
+-				nodeh = get_node_history_nodeid(hd->nodeid);
+-				if (!nodeh) {
+-					log_error("cannot kick node, no node history %d", hd->nodeid);
+-				} else if (cluster_quorate && node->left_time && nodeh->fence_time &&
+-						   quorate_time < node->left_time &&
+-						   nodeh->fence_time >= nodeh->fail_time) {
+-					log_error("node %d kill due to stateful merge", hd->nodeid);
+-					log_error("node %d kill: left %ld quorate %ld fence %ld fail %ld ", 
+-						hd->nodeid, node->left_time, quorate_time, 
+-						nodeh->fence_time, nodeh->fail_time);
++				if (!two_node_mode) {
+ 					kick_node_from_cluster(hd->nodeid);
+ 				} else {
+-					log_debug("delay kicking node %d until after fencing: left %ld quorate %ld fence %ld fail %ld", 
+-						hd->nodeid, node->left_time, quorate_time, 
+-						nodeh->fence_time, nodeh->fail_time);
+-					nodeh->kill_after_fencing = 1;
++					struct node_history *nodeh;
++					nodeh = get_node_history_nodeid(hd->nodeid);
++					if (!nodeh) {
++						log_error("cannot kick node, no node history %d", hd->nodeid);
++					} else if (cluster_quorate && node->left_time && nodeh->fence_time &&
++						   quorate_time < node->left_time &&
++						   nodeh->fence_time >= nodeh->fail_time) {
++						log_error("node %d kill due to stateful merge", hd->nodeid);
++						log_error("node %d kill: left %ld quorate %ld fence %ld fail %ld ",
++							  hd->nodeid, node->left_time, quorate_time,
++							  nodeh->fence_time, nodeh->fail_time);
++						kick_node_from_cluster(hd->nodeid);
++					} else {
++						log_debug("delay kicking node %d until after fencing: left %ld quorate %ld fence %ld fail %ld",
++							  hd->nodeid, node->left_time, quorate_time,
++							  nodeh->fence_time, nodeh->fail_time);
++						nodeh->kill_after_fencing = 1;
++					}
+ 				}
+ 				node->killed = 1;
+ 			}
